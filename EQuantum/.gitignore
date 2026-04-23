@@ -1,0 +1,19 @@
+# Workspace / logs
+EQuantum.code-workspace
+nohup.out
+Simulation_scripts/logs
+
+# Environment
+eqaunt_env.yml
+.env
+.env.local
+*.env
+*.env.local
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Notebooks
+scan_viewer.py
+viewer_env.yml
