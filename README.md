@@ -149,6 +149,7 @@ Generated artifacts typically include:
 - `dos.png` / `dos_data.npz`
 - `ldos.png` / `ldos_data.npz`
 - FSC snapshot `.npz` files for step-by-step runs
+- setup-generation files such as `sites.json`, `geoparams_hash.txt`, and Blender-updated `updated_sites_dot.json`
 
 These are usually written under a timestamped folder below:
 
@@ -189,9 +190,20 @@ Useful variables:
 ```env
 OPENAI_API_KEY=your_key_here
 OPENAI_BASE_URL=https://api.openai.com/v1
+EQUANTUM_BLENDER_BIN=blender
+EQUANTUM_BLENDER_SCRIPT=/absolute/path/to/your_blender_update_script.py
 ```
 
 The repository root `.env` is ignored by git.
+
+Optional Blender-command override:
+
+```env
+EQUANTUM_BLENDER_FILE=/absolute/path/to/your_geometry.blend
+EQUANTUM_BLENDER_COMMAND_TEMPLATE=blender --background "{blend_file}" --python "{script_file}" -- --sites "{sites_file}" --output "{config_file}" --setup-dir "{setup_dir}" --profile "{profile}" --spacing0 "{spacing0}" --density-k "{density_k}"
+```
+
+If `EQUANTUM_BLENDER_COMMAND_TEMPLATE` is not set, the backend falls back to a default command shape using `EQUANTUM_BLENDER_BIN`, `EQUANTUM_BLENDER_FILE`, and `EQUANTUM_BLENDER_SCRIPT`.
 
 ## Running the project
 
@@ -252,6 +264,25 @@ The current backend is designed to be:
 
 - LLM-first for natural clarification turns
 - deterministic for validation, state management, default handling, and execution
+
+## Blender-backed setup generation
+
+For the `dotgate_center` workflow, the backend can also generate a new hashed setup when geometry sampling parameters change.
+
+The flow is:
+
+1. derive the runtime profile from the current spec, including `spacing0` and `k`
+2. build the hashed setup folder under [`Datas/dotgate_center/setup`](/Users/yzaho/Projects/EQuantumAI/Datas/dotgate_center/setup)
+3. export a fresh `sites.json`
+4. invoke Blender in background mode to produce `updated_sites_dot.json`
+5. run the simulation from that generated config
+
+This is meant for requests such as:
+
+- `use spacing0 0.015`
+- `set k to 0.12`
+
+The repository currently contains the `.blend` files, but not a standalone checked-in Blender assignment script, so the exact Blender-side script/command is expected to be provided through the environment variables above.
 
 ## Data and outputs
 

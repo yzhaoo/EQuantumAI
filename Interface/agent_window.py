@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import html
 import json
 import os
@@ -6,6 +7,7 @@ import sys
 import traceback
 import glob
 from dataclasses import dataclass
+from threading import Event
 
 os.environ.setdefault("EQUANTUM_MPL_BACKEND", "Qt5Agg")
 
@@ -16,9 +18,10 @@ if PROJECT_ROOT not in sys.path:
 
 import numpy as np
 from qtpy import QtCore, QtWidgets
-from qtpy.QtGui import QFont
+from qtpy.QtGui import QFont, QPixmap
 
 from EQuantum.agent import run_nl_query as agent
+from EQuantum.agent.manual_boundary_check import generate_manual_boundary_check
 from EQuantum.Equantum.EQsystem import System
 from EQuantum.Equantum.fsc import FSC
 from EQuantum.viewer import FSCViewer
@@ -100,15 +103,19 @@ class ResultCanvas(FigureCanvas):
         self.fig.tight_layout()
         self.draw_idle()
 
-    def render_dos(self, npz_path, ylabel="DOS", title="Density of States"):
-        self.fig.clear()
-        ax = self.fig.add_subplot(111)
-        data = np.load(npz_path, allow_pickle=True)
+    def render_dos(self, data_path, ylabel="DOS", title="Density of States"):
+        data = np.load(data_path, allow_pickle=True)
         energy = np.asarray(data["energy"], dtype=float)
+        values = None
         if "dos" in data:
             values = np.asarray(data["dos"], dtype=float)
-        else:
+        elif "ldos" in data:
             values = np.asarray(data["ldos"], dtype=float)
+        else:
+            raise KeyError(f"Expected 'dos' or 'ldos' in {data_path}")
+
+        self.fig.clear()
+        ax = self.fig.add_subplot(111)
         ax.plot(energy, values, lw=1.5)
         ax.set_xlabel("Energy")
         ax.set_ylabel(ylabel)
@@ -117,183 +124,303 @@ class ResultCanvas(FigureCanvas):
         self.draw_idle()
 
 
+class QtLogStream:
+    def __init__(self, signal):
+        self.signal = signal
+        self._buffer = ""
+
+    def write(self, text):
+        if not text:
+            return 0
+        self._buffer += str(text)
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            if line:
+                self.signal.emit(line)
+        return len(text)
+
+    def flush(self):
+        if self._buffer:
+            self.signal.emit(self._buffer)
+            self._buffer = ""
+
+
+class ManualBoundaryCheckDialog(QtWidgets.QDialog):
+    def __init__(self, payload, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manual Boundary Check")
+        self.setModal(True)
+        self.resize(920, 760)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(THEME.spacing_lg, THEME.spacing_lg, THEME.spacing_lg, THEME.spacing_lg)
+        layout.setSpacing(THEME.spacing_md)
+
+        intro = QtWidgets.QLabel(
+            "Please review the boundary-consistency check plot before continuing the simulation."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        details = QtWidgets.QLabel(payload.get("message", ""))
+        details.setWordWrap(True)
+        layout.addWidget(details)
+
+        image_label = QtWidgets.QLabel()
+        image_label.setAlignment(QtCore.Qt.AlignCenter)
+        image_label.setMinimumHeight(560)
+        pixmap = QPixmap(payload["plot_path"])
+        if not pixmap.isNull():
+            image_label.setPixmap(
+                pixmap.scaled(
+                    860,
+                    560,
+                    QtCore.Qt.KeepAspectRatio,
+                    QtCore.Qt.SmoothTransformation,
+                )
+            )
+        else:
+            image_label.setText(f"Could not load plot: {payload['plot_path']}")
+        layout.addWidget(image_label, 1)
+
+        button_row = QtWidgets.QHBoxLayout()
+        button_row.addStretch(1)
+        cancel_button = QtWidgets.QPushButton("Cancel")
+        continue_button = QtWidgets.QPushButton("Continue")
+        continue_button.setDefault(True)
+        cancel_button.clicked.connect(self.reject)
+        continue_button.clicked.connect(self.accept)
+        button_row.addWidget(cancel_button)
+        button_row.addWidget(continue_button)
+        layout.addLayout(button_row)
+
+
 class AgentWorker(QtCore.QObject):
     agent_response = QtCore.Signal(object)
     system_built = QtCore.Signal(object, str)
     boundary_ready = QtCore.Signal(object)
+    manual_check_required = QtCore.Signal(object)
     status = QtCore.Signal(str)
     log = QtCore.Signal(str)
     finished = QtCore.Signal(object)
     failed = QtCore.Signal(str)
 
-    def __init__(self, query, parser_name, model_name, strict_parser, profile_name, session_state=None, output_dir=None):
+    def __init__(self, query, parser_name, model_name, strict_parser, profile_name, device_shape, session_state=None, output_dir=None):
         super().__init__()
         self.query = query
         self.parser_name = parser_name
         self.model_name = model_name
         self.strict_parser = strict_parser
         self.profile_name = profile_name
+        self.device_shape = device_shape
         self.session_state = session_state
         self.output_dir = output_dir
+        self._manual_check_event = None
+        self._manual_check_approved = False
+
+    @QtCore.Slot(bool)
+    def resolve_manual_check(self, approved):
+        self._manual_check_approved = bool(approved)
+        if self._manual_check_event is not None:
+            self._manual_check_event.set()
 
     @QtCore.Slot()
     def run(self):
         try:
-            args = argparse.Namespace(
-                parser=self.parser_name,
-                openai_model=self.model_name,
-                strict_openai=self.strict_parser,
-                profile=self.profile_name,
-                output_dir=self.output_dir,
-                no_scf=False,
-                ldos_method="ED",
-                ncore=20,
-                moments=256,
-                n_random=10,
-                eta=0.00015,
-                eps=0.05,
-                kernel="jackson",
-                energy_points=1024,
-                tol_poisson=1e-3,
-                tol_ildos=1e-2,
-            )
-
-            self.log.emit(f"Query: {self.query}")
-            self.status.emit("Parsing request...")
-
-            if self.session_state and self.session_state.get("active"):
-                response = agent.continue_agent_turn(
-                    self.session_state,
-                    self.query,
-                    args,
-                    execute=False,
-                )
-            else:
-                response = agent.start_agent_turn(
-                    self.query,
-                    args,
-                    execute=False,
-                )
-
-            self.agent_response.emit(response)
-            self.log.emit("Agent response:")
-            self.log.emit(json.dumps(response, indent=2))
-
-            if response["status"] != "running":
-                self.finished.emit(response)
-                return
-
-            spec = response["spec"]
-            spec = agent.apply_defaults_to_spec(
-                spec,
-                agent.get_default_spec_values(args, spec["profile"]),
-                agent.OPTIONAL_CONFIRM_FIELDS,
-            )
-            profile = agent.PROFILES[spec["profile"]]
-            agent.ensure_compatible(spec, profile)
-            setup_dir = agent.resolve_setup_dir(profile)
-            config_file = os.path.join(setup_dir, profile["config_filename"])
-            artifact_dir = agent.make_artifact_dir(profile, self.output_dir)
-            self.log.emit(f"Using setup directory: {setup_dir}")
-            self.log.emit(f"Artifacts will be saved to: {artifact_dir}")
-
-            with open(os.path.join(artifact_dir, "query_spec.json"), "w") as handle:
-                json.dump(spec, handle, indent=2)
-
-            self.status.emit("Building geometry and system...")
-            syst = System(
-                profile["geoparams"],
-                config_file=config_file,
-                ifqsystem=True,
-                quantum_builder="default",
-            )
-            self.log.emit("System built successfully.")
-            self.log.emit(f"Number of sites: {syst.num_sites}")
-            self.log.emit(f"Number of quantum sites: {len(syst.Qsites)}")
-            self.system_built.emit(syst, artifact_dir)
-
-            self.status.emit("Initializing FSC...")
-            phi = agent.magnetic_field_to_phi(spec["magnetic_field_T"], syst.unit_cell_area)
-            self.log.emit(f"Magnetic field B = {spec['magnetic_field_T']} T")
-            self.log.emit(f"Converted flux phi = {phi}")
-            qparams = {"Ufunc": lambda site: 0, "phi": phi}
-            fsc = FSC(syst, ifinitial=False, qparams=qparams, approx="TF")
-            fsc.update_BC(agent.build_boundary_conditions(profile, spec), ifinitial=True)
-            self.log.emit("Boundary conditions updated.")
-            for site_id, fsite in fsc.sites.items():
-                if site_id in syst.sites:
-                    syst.sites[site_id].potential = fsite.potential
-                    syst.sites[site_id].charge = fsite.charge
-            self.boundary_ready.emit(syst)
-            fsc.Ncore = int(spec["Ncore"])
-            fsc.convergence_tol = list(spec["convergence_tol"])
-            fsc.save_static_reference(artifact_dir)
-            self.log.emit("Saved static FSC reference.")
-
-            self.status.emit("Running FSC solver with step snapshots...")
-            self.log.emit("Starting FSC solve with snapshot_mode='step'.")
-            fsc.solve(
-                syst,
-                save=True,
-                snapshot_mode="step",
-                snapshot_every=1,
-                snapshot_folder=artifact_dir,
-                ldos_method=spec["ldos_method"],
-                save_ildos=True,
-                eta=spec["eta"],
-                M=256,
-                eps=0.05,
-                kernel="jackson",
-            )
-            self.log.emit("FSC solve finished.")
-
-            self.status.emit("Exporting final DOS/LDOS artifacts...")
-            energy_grid = np.linspace(-6 * syst.t, 6 * syst.t, 1024)
-            result = agent.summarize_run(fsc, spec, phi, artifact_dir)
-            result["setup_dir"] = setup_dir
-            result["config_file"] = config_file
-
-            if spec["task"] == "dos":
-                energy, rho = fsc.qsystem.get_dos(
-                    w=energy_grid,
-                    M=256,
+            stream = QtLogStream(self.log)
+            with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
+                args = argparse.Namespace(
+                    parser=self.parser_name,
+                    openai_model=self.model_name,
+                    strict_openai=self.strict_parser,
+                    profile=self.profile_name,
+                    device_shape=self.device_shape,
+                    output_dir=self.output_dir,
+                    no_scf=False,
+                    ldos_method="ED",
+                    # Keep the GUI on a single worker by default.
+                    # On macOS, launching joblib worker processes from the Qt worker thread
+                    # can abort the whole app instead of surfacing a normal Python exception.
+                    ncore=1,
+                    moments=256,
                     n_random=10,
+                    eta=0.00015,
+                    eps=0.05,
+                    kernel="jackson",
+                    energy_points=1024,
+                    tol_poisson=1e-3,
+                    tol_ildos=1e-2,
+                )
+
+                self.log.emit(f"Query: {self.query}")
+                self.status.emit("Parsing request...")
+
+                if self.session_state:
+                    response = agent.continue_agent_turn(
+                        self.session_state,
+                        self.query,
+                        args,
+                        execute=False,
+                    )
+                else:
+                    response = agent.start_agent_turn(
+                        self.query,
+                        args,
+                        execute=False,
+                    )
+
+                self.agent_response.emit(response)
+                self.log.emit("Agent response:")
+                self.log.emit(json.dumps(response, indent=2))
+
+                if response["status"] != "running":
+                    self.finished.emit(response)
+                    return
+
+                spec = response["spec"]
+                spec = agent.apply_defaults_to_spec(
+                    spec,
+                    agent.get_default_spec_values(args, spec["profile"]),
+                    agent.OPTIONAL_CONFIRM_FIELDS,
+                )
+                profile = agent.get_runtime_profile(spec)
+                agent.ensure_compatible(spec, profile)
+                setup_paths = agent.ensure_profile_setup(profile, spec, require_config=True)
+                setup_dir = setup_paths["setup_dir"]
+                config_file = setup_paths["config_file"]
+                artifact_dir = agent.make_artifact_dir(profile, self.output_dir)
+                self.log.emit(f"Using setup directory: {setup_dir}")
+                self.log.emit(f"Artifacts will be saved to: {artifact_dir}")
+
+                with open(os.path.join(artifact_dir, "query_spec.json"), "w") as handle:
+                    json.dump(spec, handle, indent=2)
+
+                self.status.emit("Building geometry and system...")
+                syst = System(
+                    profile["geoparams"],
+                    config_file=config_file,
+                    ifqsystem=True,
+                    quantum_builder="default",
+                )
+                self.log.emit("System built successfully.")
+                self.log.emit(f"Number of sites: {syst.num_sites}")
+                self.log.emit(f"Number of quantum sites: {len(syst.Qsites)}")
+                self.system_built.emit(syst, artifact_dir)
+
+                self.status.emit("Initializing FSC...")
+                phi = agent.magnetic_field_to_phi(spec["magnetic_field_T"], syst.unit_cell_area)
+                self.log.emit(f"Magnetic field B = {spec['magnetic_field_T']} T")
+                self.log.emit(f"Converted flux phi = {phi}")
+                qparams = {"Ufunc": lambda site: 0, "phi": phi}
+                fsc = FSC(syst, ifinitial=False, qparams=qparams, approx="TF")
+                fsc.update_BC(agent.build_boundary_conditions(profile, spec), ifinitial=True)
+                self.log.emit("Boundary conditions updated.")
+                for site_id, fsite in fsc.sites.items():
+                    if site_id in syst.sites:
+                        syst.sites[site_id].potential = fsite.potential
+                        syst.sites[site_id].charge = fsite.charge
+                self.boundary_ready.emit(syst)
+                fsc.Ncore = int(spec["Ncore"])
+                fsc.convergence_tol = list(spec["convergence_tol"])
+                fsc.save_static_reference(artifact_dir)
+                self.log.emit("Saved static FSC reference.")
+
+                self.status.emit("Waiting for manual boundary check...")
+                manual_check = generate_manual_boundary_check(fsc, artifact_dir)
+                self.log.emit(manual_check["message"])
+                self.log.emit(f"Manual boundary plot saved to: {manual_check['plot_path']}")
+                self._manual_check_event = Event()
+                self._manual_check_approved = False
+                self.manual_check_required.emit(manual_check)
+                self._manual_check_event.wait()
+                self._manual_check_event = None
+                if not self._manual_check_approved:
+                    cancel_message = (
+                        "Manual boundary check canceled. Tell me what to change, "
+                        "or reply 'start' to reset and run again with the same parameters."
+                    )
+                    resumed_session = dict(response["session_state"])
+                    resumed_session["active"] = True
+                    resumed_session["run_confirmed"] = False
+                    resumed_session["missing_fields"] = []
+                    resumed_session.setdefault("history", []).append({"role": "assistant", "text": cancel_message})
+                    resumed_response = {
+                        "status": "needs_clarification",
+                        "message": cancel_message,
+                        "spec": spec,
+                        "missing_fields": [],
+                        "session_state": resumed_session,
+                    }
+                    self.agent_response.emit(resumed_response)
+                    self.finished.emit(resumed_response)
+                    return
+                self.log.emit("Manual boundary check approved.")
+
+                self.status.emit("Running FSC solver with step snapshots...")
+                self.log.emit("Starting FSC solve with snapshot_mode='step'.")
+                fsc.solve(
+                    syst,
+                    save=True,
+                    snapshot_mode="step",
+                    snapshot_every=1,
+                    snapshot_folder=artifact_dir,
+                    ldos_method=spec["ldos_method"],
+                    save_ildos=True,
+                    eta=spec["eta"],
+                    M=256,
                     eps=0.05,
                     kernel="jackson",
                 )
-                agent.save_dos_artifacts(artifact_dir, energy, rho)
-                result["artifacts"] = {
-                    "plot": os.path.join(artifact_dir, "dos.png"),
-                    "data": os.path.join(artifact_dir, "dos_data.npz"),
+                self.log.emit("FSC solve finished.")
+
+                self.status.emit("Exporting final DOS/LDOS artifacts...")
+                energy_grid = np.linspace(-6 * syst.t, 6 * syst.t, 1024)
+                result = agent.summarize_run(fsc, spec, phi, artifact_dir)
+                result["setup_dir"] = setup_dir
+                result["config_file"] = config_file
+
+                if spec["task"] == "dos":
+                    energy, rho = fsc.qsystem.get_dos(
+                        w=energy_grid,
+                        M=256,
+                        n_random=10,
+                        eps=0.05,
+                        kernel="jackson",
+                    )
+                    agent.save_dos_artifacts(artifact_dir, energy, rho)
+                    result["artifacts"] = {
+                        "plot": os.path.join(artifact_dir, "dos.png"),
+                        "data": os.path.join(artifact_dir, "dos_data.npz"),
+                    }
+                else:
+                    site_id = agent.save_ldos_artifacts(artifact_dir, fsc, site_mode="center")
+                    result["ldos_site_id"] = site_id
+                    result["artifacts"] = {
+                        "plot": os.path.join(artifact_dir, "ldos.png"),
+                        "data": os.path.join(artifact_dir, "ldos_data.npz"),
+                    }
+
+                with open(os.path.join(artifact_dir, "run_summary.json"), "w") as handle:
+                    json.dump(result, handle, indent=2)
+
+                completed_session = dict(response["session_state"])
+                completed_session["active"] = False
+                completed_session["missing_fields"] = []
+                completed_session.setdefault("history", []).append({"role": "assistant", "text": "Simulation completed."})
+
+                completed_response = {
+                    "status": "completed",
+                    "message": "Simulation completed.",
+                    "spec": spec,
+                    "result": result,
+                    "missing_fields": [],
+                    "session_state": completed_session,
                 }
-            else:
-                site_id = agent.save_ldos_artifacts(artifact_dir, fsc, site_mode="center")
-                result["ldos_site_id"] = site_id
-                result["artifacts"] = {
-                    "plot": os.path.join(artifact_dir, "ldos.png"),
-                    "data": os.path.join(artifact_dir, "ldos_data.npz"),
-                }
 
-            with open(os.path.join(artifact_dir, "run_summary.json"), "w") as handle:
-                json.dump(result, handle, indent=2)
-
-            completed_session = dict(response["session_state"])
-            completed_session["active"] = False
-            completed_session["missing_fields"] = []
-            completed_session.setdefault("history", []).append({"role": "assistant", "text": "Simulation completed."})
-
-            completed_response = {
-                "status": "completed",
-                "message": "Simulation completed.",
-                "spec": spec,
-                "result": result,
-                "missing_fields": [],
-                "session_state": completed_session,
-            }
-
-            self.log.emit("Run summary:")
-            self.log.emit(json.dumps(completed_response, indent=2))
-            self.finished.emit(completed_response)
+                self.log.emit("Run summary:")
+                self.log.emit(json.dumps(completed_response, indent=2))
+                self.finished.emit(completed_response)
+                stream.flush()
         except Exception:
             error_text = traceback.format_exc()
             self.log.emit(error_text)
@@ -442,6 +569,13 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
         self.profile_combo.addItems(sorted(agent.PROFILES.keys()))
         settings_layout.addWidget(self.profile_combo)
 
+        settings_layout.addWidget(QtWidgets.QLabel("Device Shape"))
+        self.device_shape_combo = QtWidgets.QComboBox()
+        default_profile = agent.PROFILES[self.profile_combo.currentText()]
+        self.device_shape_combo.addItems(default_profile.get("supported_device_shapes", [default_profile.get("device_shape", "dotgate")]))
+        settings_layout.addWidget(self.device_shape_combo)
+        self.profile_combo.currentTextChanged.connect(self.refresh_device_shape_options)
+
         settings_layout.addWidget(QtWidgets.QLabel("Parser"))
         self.parser_combo = QtWidgets.QComboBox()
         self.parser_combo.addItems(["langchain", "openai", "regex"])
@@ -532,7 +666,7 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
         self.log_output = QtWidgets.QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setMaximumBlockCount(5000)
-        log_layout.addWidget(self.log_output)
+        log_layout.addWidget(self.log_output, 1)
         self.bottom_tabs.addTab(log_tab, "Run Output")
 
         json_tab = QtWidgets.QWidget()
@@ -796,6 +930,19 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
         self.sidebar_stack.setCurrentIndex(index)
         self.sidebar_title.setText(title)
 
+    def refresh_device_shape_options(self, profile_name):
+        profile = agent.PROFILES[profile_name]
+        device_shapes = profile.get("supported_device_shapes", [profile.get("device_shape", "dotgate")])
+        current = self.device_shape_combo.currentText()
+        self.device_shape_combo.blockSignals(True)
+        self.device_shape_combo.clear()
+        self.device_shape_combo.addItems(device_shapes)
+        if current in device_shapes:
+            self.device_shape_combo.setCurrentText(current)
+        else:
+            self.device_shape_combo.setCurrentText(profile.get("device_shape", device_shapes[0]))
+        self.device_shape_combo.blockSignals(False)
+
     def set_status(self, text):
         self.status_label.setText(text)
         self.statusBar().showMessage(text)
@@ -838,6 +985,18 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
         self.folder_label.setText("Log folder: -")
         self.set_status("Idle")
 
+    def _prepare_followup_session_state(self, session_state):
+        if not session_state:
+            return None
+        prepared = dict(session_state)
+        prepared["active"] = True
+        prepared["run_confirmed"] = False
+        prepared["setup_generation_confirmed"] = False
+        prepared["pending_setup_generation"] = False
+        prepared["pending_setup_dir"] = None
+        prepared["missing_fields"] = list(prepared.get("missing_fields", []))
+        return prepared
+
     def submit_turn(self):
         query = self.query_input.toPlainText().strip()
         if not query:
@@ -865,6 +1024,7 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
             model_name=self.model_input.text().strip() or "gpt-4o-mini",
             strict_parser=self.strict_checkbox.isChecked(),
             profile_name=self.profile_combo.currentText(),
+            device_shape=self.device_shape_combo.currentText(),
             session_state=self.active_session_state,
         )
         self.worker.moveToThread(self.worker_thread)
@@ -873,6 +1033,7 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
         self.worker.agent_response.connect(self.on_agent_response)
         self.worker.system_built.connect(self.on_system_built)
         self.worker.boundary_ready.connect(self.on_boundary_ready)
+        self.worker.manual_check_required.connect(self.on_manual_check_required)
         self.worker.status.connect(self.set_status)
         self.worker.log.connect(self.append_log)
         self.worker.finished.connect(self.on_finished)
@@ -893,12 +1054,17 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
         status = response.get("status")
         if status == "needs_clarification":
             self.active_session_state = response.get("session_state")
+            self.run_button.setEnabled(True)
+            self.query_input.setFocus()
+            if self.current_artifact_dir:
+                self.open_folder_button.setEnabled(True)
+                self.refresh_solver_button.setEnabled(True)
             summary_text = json.dumps(response, indent=2)
             self.summary_output.setPlainText(summary_text)
             self.bottom_summary_output.setPlainText(summary_text)
             self.set_status("Waiting for clarification")
         elif status == "running":
-            self.active_session_state = None
+            self.active_session_state = self._prepare_followup_session_state(response.get("session_state"))
             summary_text = json.dumps(response, indent=2)
             self.summary_output.setPlainText(summary_text)
             self.bottom_summary_output.setPlainText(summary_text)
@@ -933,6 +1099,14 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
         self.geometry_mode_combo.setCurrentText("potential")
         self.geometry_mode_combo.blockSignals(False)
         self.update_geometry_view()
+
+    def on_manual_check_required(self, payload):
+        self.append_chat("Agent", "Please review the manual boundary check plot before continuing.")
+        self.set_status("Waiting for manual check")
+        dialog = ManualBoundaryCheckDialog(payload, self)
+        approved = dialog.exec() == QtWidgets.QDialog.Accepted
+        if self.worker is not None:
+            self.worker.resolve_manual_check(approved)
 
     def refresh_viewer(self):
         if self.current_artifact_dir is None:
@@ -983,10 +1157,15 @@ class AgentInterfaceWindow(QtWidgets.QMainWindow):
         self.bottom_summary_output.setPlainText(summary_text)
         if result.get("status") == "needs_clarification":
             self.active_session_state = result.get("session_state")
+            self.run_button.setEnabled(True)
+            self.query_input.setFocus()
+            if self.current_artifact_dir:
+                self.open_folder_button.setEnabled(True)
+                self.refresh_solver_button.setEnabled(True)
             self.set_status("Waiting for clarification")
             return
 
-        self.active_session_state = None
+        self.active_session_state = self._prepare_followup_session_state(result.get("session_state"))
         self.append_chat("Agent", result.get("message", "Simulation completed."))
         self.set_status("Completed")
         if result.get("status") == "completed":
