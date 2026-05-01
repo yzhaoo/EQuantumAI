@@ -1,6 +1,52 @@
+# =========================
+# Environment / secrets
+# =========================
 .env
 .env.local
 *.env
 *.env.local
-/Datas
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# =========================
+# Node / Frontend
+# =========================
+node_modules/
+dist/
+build/
+.vite/
+
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+
+# VSCode workspace (optional)
 EQuantumAI.code-workspace
+
+# =========================
+# Simulation data / outputs
+# =========================
+Datas/
+agent_runs/
+*.npz
+*.png
+
+# =========================
+# Misc
+# =========================
+*.tmp
+*.swp

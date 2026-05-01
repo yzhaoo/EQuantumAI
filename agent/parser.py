@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import urllib.error
+import urllib.request
 from typing import Any
 
 from agent.schemas import AgentResponse, AgentRuntimeConfig
@@ -326,6 +329,125 @@ def normalize_turn_parse(parsed, default_profile="dotgate_center"):
     return normalized
 
 
+def user_turn_parse_schema(default_profile="dotgate_center"):
+    return {
+        "type": "object",
+        "properties": {
+            "raw_query": {"type": "string"},
+            "intent": {"type": "string", "enum": TURN_INTENTS},
+            "updates": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": ["string", "null"], "enum": ["dos", "ldos", None]},
+                    "profile": {"type": ["string", "null"], "enum": [default_profile, None]},
+                    "lattice_type": {"type": ["string", "null"], "enum": ["square", "honeycomb", None]},
+                    "device_shape": {"type": ["string", "null"], "enum": ["dotgate", "squaregate_center", None]},
+                    "backgate_voltage": {"type": ["number", "null"]},
+                    "magnetic_field_T": {"type": ["number", "null"]},
+                    "solve_self_consistent": {"type": ["boolean", "null"]},
+                    "spacing0": {"type": ["number", "null"]},
+                    "density_k": {"type": ["number", "null"]},
+                    "dielectric_constant": {"type": ["number", "null"]},
+                    "gate_potential": {"type": ["number", "null"]},
+                    "convergence_tol": {
+                        "type": ["array", "null"],
+                        "items": {"type": "number"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                    "Ncore": {"type": ["integer", "null"]},
+                    "eta": {"type": ["number", "null"]},
+                    "ldos_method": {"type": ["string", "null"], "enum": ["TF", "ED", "kmeanssample", None]},
+                },
+                "required": UPDATE_FIELDS,
+                "additionalProperties": False,
+            },
+        },
+        "required": ["raw_query", "intent", "updates"],
+        "additionalProperties": False,
+    }
+
+
+def build_user_turn_parser_prompt(default_profile="dotgate_center"):
+    return (
+        "You are a parser for a quantum simulation agent. "
+        "Convert the latest user message into a structured partial update. "
+        "Use the current session context to interpret terse replies. "
+        "Do not invent values. Return only JSON matching the schema. "
+        "Only include values in updates when the latest user message explicitly states or strongly implies them. "
+        "Understand synonyms: "
+        "B, field, magnetic field -> magnetic_field_T in Tesla. "
+        "Vbg, backgate -> backgate_voltage in volts. "
+        "cores, ncore, CPU cores -> Ncore. "
+        "broadening -> eta. "
+        "ED, exact diagonalization -> ldos_method='ED'. "
+        "TF, Thomas-Fermi -> ldos_method='TF'. "
+        "kmeans -> ldos_method='kmeanssample'. "
+        "'start', 'run', 'proceed' -> confirm_run. "
+        "'use defaults', 'use default', 'ok defaults' -> confirm_defaults. "
+        "'generate setup', 'create setup' -> confirm_setup_generation. "
+        "'no', 'change defaults', 'not defaults' -> reject_defaults. "
+        "Normalize obvious typos like 'sqaure' to 'square'. "
+        f"If no profile is stated, do not invent one; use null in updates. The default profile is {default_profile}."
+    )
+
+
+def extract_json_text_from_response(payload):
+    if isinstance(payload.get("output_text"), str):
+        return payload["output_text"]
+
+    for item in payload.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content", []):
+            if content.get("type") == "output_text" and isinstance(content.get("text"), str):
+                return content["text"]
+
+    raise ValueError("OpenAI response did not contain output_text content.")
+
+
+def llm_parse_user_turn(query, default_profile, api_key, model, base_url, context):
+    system_prompt = build_user_turn_parser_prompt(default_profile)
+    context_text = json.dumps(context, indent=2, sort_keys=True)
+    request_body = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": f"Session context:\n{context_text}"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": f"Latest user message:\n{query}"}]},
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "equantum_user_turn_parse",
+                "strict": True,
+                "schema": user_turn_parse_schema(default_profile),
+            }
+        },
+    }
+
+    url = base_url.rstrip("/") + "/responses"
+    data = json.dumps(request_body).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with urllib.request.urlopen(request, timeout=60) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    parsed = json.loads(extract_json_text_from_response(payload))
+    parsed["raw_query"] = query
+    parsed["_parser"] = f"openai:{model}"
+    parsed["_fallback_used"] = False
+    return normalize_turn_parse(parsed, default_profile=default_profile)
+
+
 def regex_parse_user_turn(
     query,
     default_profile="dotgate_center",
@@ -388,6 +510,70 @@ def parse_user_turn(
     awaiting_run_confirmation=False,
 ):
     default_profile = getattr(args, "profile", "dotgate_center")
+    requested_parser = parser_name_from_args(args)
+    context = {
+        "current_spec": normalize_spec(current_spec, default_profile=default_profile)
+        if current_spec is not None
+        else normalize_spec(None, default_profile=default_profile),
+        "missing_fields": list(missing_fields or []),
+        "pending_default_fields": list(pending_default_fields or []),
+        "awaiting_defaults_confirmation": bool(awaiting_defaults_confirmation),
+        "awaiting_setup_generation_confirmation": bool(awaiting_setup_generation_confirmation),
+        "awaiting_run_confirmation": bool(awaiting_run_confirmation),
+    }
+
+    if requested_parser == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY")
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        model = getattr(args, "openai_model", "gpt-4o-mini")
+        allow_fallback = not getattr(args, "strict_openai", False)
+
+        if api_key:
+            try:
+                return llm_parse_user_turn(
+                    user_text,
+                    default_profile=default_profile,
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                    context=context,
+                )
+            except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+                if not allow_fallback:
+                    raise
+                turn_parse = regex_parse_user_turn(
+                    user_text,
+                    default_profile=default_profile,
+                    current_spec=current_spec,
+                    missing_fields=missing_fields,
+                    pending_default_fields=pending_default_fields,
+                    awaiting_defaults_confirmation=awaiting_defaults_confirmation,
+                    awaiting_setup_generation_confirmation=awaiting_setup_generation_confirmation,
+                    awaiting_run_confirmation=awaiting_run_confirmation,
+                )
+                turn_parse["_parser"] = f"regex_fallback_after_openai_error:{type(exc).__name__}"
+                turn_parse["_fallback_used"] = True
+                turn_parse["_parser_error"] = str(exc)
+                return turn_parse
+
+        if getattr(args, "strict_openai", False):
+            raise RuntimeError("OPENAI_API_KEY is not set and strict OpenAI parsing was requested.")
+
+        turn_parse = regex_parse_user_turn(
+            user_text,
+            default_profile=default_profile,
+            current_spec=current_spec,
+            missing_fields=missing_fields,
+            pending_default_fields=pending_default_fields,
+            awaiting_defaults_confirmation=awaiting_defaults_confirmation,
+            awaiting_setup_generation_confirmation=awaiting_setup_generation_confirmation,
+            awaiting_run_confirmation=awaiting_run_confirmation,
+        )
+        turn_parse["_parser"] = "regex_fallback_no_api_key"
+        turn_parse["_fallback_used"] = True
+        turn_parse["_parser_error"] = "OPENAI_API_KEY is not set."
+        return turn_parse
+
     turn_parse = regex_parse_user_turn(
         user_text,
         default_profile=default_profile,
@@ -398,7 +584,6 @@ def parse_user_turn(
         awaiting_setup_generation_confirmation=awaiting_setup_generation_confirmation,
         awaiting_run_confirmation=awaiting_run_confirmation,
     )
-    requested_parser = parser_name_from_args(args)
     if requested_parser != "regex":
         turn_parse["_parser"] = f"regex_fallback_from_{requested_parser}"
         turn_parse["_fallback_used"] = True
@@ -553,7 +738,13 @@ def build_defaults_confirmation_message(fields, defaults):
 
 
 def is_affirmative_reply(text):
-    return bool(re.search(r"\b(yes|yep|use defaults|sounds good|looks good|ok|okay|go ahead|keep them)\b", text, flags=re.IGNORECASE))
+    return bool(
+        re.search(
+            r"\b(yes|yep|use defaults|use default|sounds good|looks good|ok|okay|go ahead|keep them)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def is_negative_reply(text):

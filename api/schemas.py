@@ -9,7 +9,7 @@ class AgentTurnRequest(BaseModel):
     message: str
     session_state: dict[str, Any] | None = None
     execute: bool = False
-    parser: str = "regex"
+    parser: str = "openai"
     openai_model: str = "gpt-4o-mini"
     strict_openai: bool = False
     profile: str = "dotgate_center"
@@ -38,7 +38,7 @@ class AgentTurnResponse(BaseModel):
 
 class CreateRunRequest(BaseModel):
     spec: dict[str, Any]
-    parser: str = "regex"
+    parser: str = "openai"
     openai_model: str = "gpt-4o-mini"
     strict_openai: bool = False
     profile: str = "dotgate_center"
