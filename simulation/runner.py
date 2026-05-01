@@ -21,6 +21,12 @@ from simulation import artifacts, profiles, setup
 StatusCallback = Callable[[str], None]
 LogCallback = Callable[[str], None]
 ManualCheckCallback = Callable[[dict[str, Any]], bool]
+AbortCheckCallback = Callable[[], bool]
+MetadataCallback = Callable[[dict[str, Any]], None]
+
+
+class RunAbortedError(RuntimeError):
+    pass
 
 
 def _noop_status(_: str) -> None:
@@ -35,6 +41,20 @@ def _default_manual_check(_: dict[str, Any]) -> bool:
     return True
 
 
+def _never_abort() -> bool:
+    return False
+
+
+def _raise_if_aborted(should_abort: AbortCheckCallback | None) -> None:
+    callback = should_abort or _never_abort
+    if callback():
+        raise RunAbortedError("Simulation aborted by user request.")
+
+
+def _noop_metadata(_: dict[str, Any]) -> None:
+    return None
+
+
 def run_spec(
     spec: dict[str, Any],
     config: AgentRuntimeConfig | None = None,
@@ -42,6 +62,8 @@ def run_spec(
     status: StatusCallback | None = None,
     log: LogCallback | None = None,
     manual_check: ManualCheckCallback | None = None,
+    should_abort: AbortCheckCallback | None = None,
+    metadata: MetadataCallback | None = None,
     require_manual_check: bool = False,
     snapshot_mode: str = "step",
     snapshot_every: int = 1,
@@ -50,17 +72,28 @@ def run_spec(
     status_cb = status or _noop_status
     log_cb = log or _noop_log
     manual_cb = manual_check or _default_manual_check
+    metadata_cb = metadata or _noop_metadata
     args = runtime_config.to_namespace()
+    _raise_if_aborted(should_abort)
 
     spec, profile = profiles.resolve_runtime_spec(spec, args)
+    _raise_if_aborted(should_abort)
     setup_dir, config_file = setup.resolve_setup(profile, spec, require_config=True)
     artifact_dir = artifacts.make_artifact_dir(profile, runtime_config.output_dir)
+    metadata_cb(
+        {
+            "artifact_dir": artifact_dir,
+            "setup_dir": setup_dir,
+            "config_file": config_file,
+        }
+    )
 
     log_cb(f"Using setup directory: {setup_dir}")
     log_cb(f"Artifacts will be saved to: {artifact_dir}")
     artifacts.save_query_spec(artifact_dir, spec)
 
     status_cb("building_system")
+    _raise_if_aborted(should_abort)
     syst = System(
         profile["geoparams"],
         config_file=config_file,
@@ -72,6 +105,7 @@ def run_spec(
     log_cb(f"Number of quantum sites: {len(syst.Qsites)}")
 
     status_cb("initializing_fsc")
+    _raise_if_aborted(should_abort)
     phi = profiles.magnetic_field_to_phi(spec["magnetic_field_T"], syst.unit_cell_area)
     log_cb(f"Magnetic field B = {spec['magnetic_field_T']} T")
     log_cb(f"Converted flux phi = {phi}")
@@ -95,10 +129,12 @@ def run_spec(
         manual_check_payload = generate_manual_boundary_check(fsc, artifact_dir)
         log_cb(manual_check_payload["message"])
         log_cb(f"Manual boundary plot saved to: {manual_check_payload['plot_path']}")
+        _raise_if_aborted(should_abort)
         if not manual_cb(manual_check_payload):
-            raise RuntimeError("Manual boundary check was rejected.")
+            raise RunAbortedError("Simulation aborted after manual boundary check rejection.")
 
     status_cb("solving")
+    _raise_if_aborted(should_abort)
     log_cb(f"Starting FSC solve with snapshot_mode={snapshot_mode!r}.")
     fsc.solve(
         syst,
@@ -116,6 +152,7 @@ def run_spec(
     log_cb("FSC solve finished.")
 
     status_cb("exporting_artifacts")
+    _raise_if_aborted(should_abort)
     energy_grid = np.linspace(-6 * syst.t, 6 * syst.t, runtime_config.energy_points)
     result = artifacts.summarize_run(fsc, spec, phi, artifact_dir)
     result["setup_dir"] = setup_dir

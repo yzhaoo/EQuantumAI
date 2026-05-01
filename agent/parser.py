@@ -384,7 +384,8 @@ def build_user_turn_parser_prompt(default_profile="dotgate_center"):
         "TF, Thomas-Fermi -> ldos_method='TF'. "
         "kmeans -> ldos_method='kmeanssample'. "
         "'start', 'run', 'proceed' -> confirm_run. "
-        "'use defaults', 'use default', 'ok defaults' -> confirm_defaults. "
+        "'use defaults', 'use default', 'ok defaults', 'all good', 'continue', 'looks fine' -> confirm_defaults "
+        "when the session is currently asking you to confirm defaults. "
         "'generate setup', 'create setup' -> confirm_setup_generation. "
         "'no', 'change defaults', 'not defaults' -> reject_defaults. "
         "Normalize obvious typos like 'sqaure' to 'square'. "
@@ -740,7 +741,7 @@ def build_defaults_confirmation_message(fields, defaults):
 def is_affirmative_reply(text):
     return bool(
         re.search(
-            r"\b(yes|yep|use defaults|use default|sounds good|looks good|ok|okay|go ahead|keep them)\b",
+            r"\b(yes|yep|use defaults|use default|sounds good|looks good|looks fine|all good|all set|ok|okay|continue|proceed|keep them|g(?:o|e)\s+ahead)\b",
             text,
             flags=re.IGNORECASE,
         )

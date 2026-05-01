@@ -67,6 +67,84 @@ class ManualCheckRequest(BaseModel):
     approved: bool
 
 
+class AbortRunResponse(BaseModel):
+    run_id: str
+    status: str
+
+
+class ViewerSnapshotsResponse(BaseModel):
+    snapshots: list[str] = Field(default_factory=list)
+    has_static: bool
+
+
+class ViewerQuantumHeatmapResponse(BaseModel):
+    snapshot: str
+    property: str
+    site_ids: list[int]
+    x: list[float | None]
+    y: list[float | None]
+    values: list[float | None]
+    qprime_mask: list[bool]
+    color_min: float
+    color_max: float
+
+
+class ViewerSiteLdosResponse(BaseModel):
+    site_id: int
+    snapshot: str
+    energy: list[float | None]
+    ldos: list[float | None]
+    Ui: float | None = None
+    ni: float | None = None
+    ldos_at_0: float | None = None
+    ldos_at_Ui: float | None = None
+
+
+class ViewerSurfaceCutRequest(BaseModel):
+    snapshot: str
+    property: str
+    p0: list[float]
+    p1: list[float]
+    cut_width: float = 0.05
+
+
+class ViewerSurfaceCutResponse(BaseModel):
+    snapshot: str
+    property: str
+    p0: list[float | None]
+    p1: list[float | None]
+    cut_width: float
+    distance_along: list[float | None]
+    z: list[float | None]
+    values: list[float | None]
+
+
+class ViewerOverlayCurve(BaseModel):
+    snapshot: str
+    distance_along: list[float | None]
+    Ui: list[float | None]
+    is_current: bool
+
+
+class ViewerLdosCutRequest(BaseModel):
+    snapshot: str
+    p0: list[float]
+    p1: list[float]
+    cut_width: float = 0.05
+    overlay_snapshots: list[str] = Field(default_factory=list)
+
+
+class ViewerLdosCutResponse(BaseModel):
+    snapshot: str
+    p0: list[float | None]
+    p1: list[float | None]
+    cut_width: float
+    distance_along: list[float | None]
+    energy: list[float | None]
+    ldos_matrix: list[list[float | None]]
+    overlays: list[ViewerOverlayCurve] = Field(default_factory=list)
+
+
 class EventItem(BaseModel):
     type: Literal["status", "log", "manual_check", "result", "error"]
     message: str | None = None

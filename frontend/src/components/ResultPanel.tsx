@@ -1,12 +1,9 @@
-import type { RunStateResponse, SimulationSpec } from "../api";
+import type { RunStateResponse } from "../api";
+import { SnapshotViewer } from "./viewer/SnapshotViewer";
 
 type ResultPanelProps = {
-  pendingSpec: SimulationSpec | null;
   runState: RunStateResponse | null;
   runId: string | null;
-  isLaunching: boolean;
-  launchable: boolean;
-  onStartRun: () => void;
   onApproveManualCheck: (approved: boolean) => void;
 };
 
@@ -32,12 +29,8 @@ function renderArtifacts(runState: RunStateResponse | null) {
 }
 
 export function ResultPanel({
-  pendingSpec,
   runState,
   runId,
-  isLaunching,
-  launchable,
-  onStartRun,
   onApproveManualCheck,
 }: ResultPanelProps) {
   const result = runState?.result;
@@ -46,28 +39,10 @@ export function ResultPanel({
     <section className="panel-card">
       <header className="shell-header">
         <h3 className="shell-title">Run Console</h3>
-        <p className="shell-subtitle">Launch background runs, inspect their status, and handle manual approval checkpoints.</p>
+        <p className="shell-subtitle">Inspect run progress, artifacts, plots, and manual approval checkpoints.</p>
       </header>
       <div className="panel-body">
         <div className="result-section">
-          <div className="result-card">
-            <h4>Run Control</h4>
-            <p>{runId ? `Active run: ${runId}` : launchable ? "The current spec is ready to launch." : "The agent needs more input before a run can start."}</p>
-            <div className="action-row">
-              <button className="primary-button" disabled={!launchable || isLaunching || runId !== null} onClick={onStartRun}>
-                {isLaunching ? "Launching..." : "Start Run"}
-              </button>
-            </div>
-            {pendingSpec ? (
-              <ul>
-                <li>Task: {pendingSpec.task ?? "-"}</li>
-                <li>Lattice: {pendingSpec.lattice_type ?? "-"}</li>
-                <li>Backgate: {pendingSpec.backgate_voltage ?? "-"}</li>
-                <li>Magnetic field: {pendingSpec.magnetic_field_T ?? "-"}</li>
-              </ul>
-            ) : null}
-          </div>
-
           <div className="result-card">
             <h4>Manual Check</h4>
             {runState?.manual_check_pending ? (
@@ -86,7 +61,7 @@ export function ResultPanel({
                     Approve
                   </button>
                   <button className="danger-button" onClick={() => onApproveManualCheck(false)}>
-                    Reject
+                    Reject / Abort
                   </button>
                 </div>
               </>
@@ -99,6 +74,10 @@ export function ResultPanel({
             <h4>Artifacts</h4>
             {renderArtifacts(runState)}
           </div>
+
+          {runId && ["building_system", "initializing_fsc", "manual_check_required", "solving", "exporting_artifacts", "completed"].includes(runState?.status ?? "") ? (
+            <SnapshotViewer runId={runId} runStatus={runState?.status ?? null} />
+          ) : null}
 
           <div className="result-card">
             <h4>Summary</h4>

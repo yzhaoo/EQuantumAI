@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   approveManualCheck,
+  abortRun,
   createRun,
   fetchRun,
   sendAgentTurn,
@@ -40,10 +41,11 @@ export default function App() {
     if (!runId) {
       return;
     }
+    const activeRunId = runId;
 
     async function loadRun() {
       try {
-        const state = await fetchRun(runId);
+        const state = await fetchRun(activeRunId);
         setRunState(state);
         if (state.status === "completed" || state.status === "failed") {
           if (pollTimer.current !== null) {
@@ -141,6 +143,28 @@ export default function App() {
     }
   }
 
+  async function handleAbortRun() {
+    if (!runId) {
+      return;
+    }
+
+    try {
+      setErrorMessage(null);
+      await abortRun(runId);
+      const refreshed = await fetchRun(runId);
+      setRunState(refreshed);
+      setMessages((prev) => [
+        ...prev,
+        buildMessage(
+          "assistant",
+          "Abort requested. If the run is waiting or between phases it will stop quickly. If it is already inside the solver, it may finish the current solver call before the abort takes effect.",
+        ),
+      ]);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to abort run.");
+    }
+  }
+
   const statusLabel = runState?.status ?? lastAgentResponse?.status ?? "idle";
 
   return (
@@ -178,15 +202,7 @@ export default function App() {
           </div>
         </aside>
 
-        <ChatPanel
-          messages={messages}
-          draft={draft}
-          isBusy={isSending}
-          onDraftChange={setDraft}
-          onSubmit={handleSubmit}
-        />
-
-        <section className="right-column glass-panel">
+        <section className="viewer-column glass-panel">
           <div className="status-strip">
             <span className={`status-pill ${runState?.status && runState.status !== "failed" ? "live" : ""}`}>
               Agent: {lastAgentResponse?.status ?? "idle"}
@@ -202,16 +218,26 @@ export default function App() {
           <div className="panel-stack">
             <SpecPanel spec={currentSpec} sessionState={sessionState} />
             <ResultPanel
-              pendingSpec={currentSpec}
               runState={runState}
               runId={runId}
-              isLaunching={isLaunching}
-              launchable={launchable}
-              onStartRun={handleStartRun}
               onApproveManualCheck={handleManualCheck}
             />
           </div>
         </section>
+
+        <ChatPanel
+          messages={messages}
+          draft={draft}
+          isBusy={isSending}
+          isLaunching={isLaunching}
+          launchable={launchable}
+          runId={runId}
+          runStatus={runState?.status ?? null}
+          onDraftChange={setDraft}
+          onSubmit={handleSubmit}
+          onStartRun={handleStartRun}
+          onAbortRun={handleAbortRun}
+        />
       </div>
     </div>
   );

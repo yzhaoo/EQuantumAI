@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import signal
+import subprocess
+import sys
 import threading
-import traceback
+import time
 import uuid
-from datetime import datetime
 from typing import Any
 
 from agent.schemas import AgentRuntimeConfig
-from simulation.runner import run_spec
-
-
-def _now() -> str:
-    return datetime.now().isoformat()
+from api.runtime import (
+    PROJECT_ROOT,
+    default_state,
+    ensure_run_dir,
+    load_state,
+    manual_check_path,
+    request_path,
+    save_state,
+    set_error,
+)
 
 
 class RunRecord:
@@ -20,6 +27,8 @@ class RunRecord:
         self.spec = dict(spec)
         self.config = config
         self.require_manual_check = require_manual_check
+        self.run_dir = ensure_run_dir(self.id)
+        self.process: subprocess.Popen[str] | None = None
         self.status = "queued"
         self.result: dict[str, Any] | None = None
         self.error: str | None = None
@@ -27,66 +36,114 @@ class RunRecord:
         self.events: list[dict[str, Any]] = []
         self.manual_check_pending = False
         self.manual_check_payload: dict[str, Any] | None = None
-        self._approval: bool | None = None
-        self._condition = threading.Condition()
-        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
 
-    def add_event(self, event_type: str, message: str | None = None, payload: dict[str, Any] | None = None) -> None:
-        event = {
-            "type": event_type,
-            "message": message,
-            "payload": payload,
-            "timestamp": _now(),
+        save_state(self.run_dir, default_state(self.id, self.spec))
+        self._write_request_file()
+
+    def _write_request_file(self) -> None:
+        payload = {
+            "spec": self.spec,
+            "config": self.config.to_namespace().__dict__,
+            "require_manual_check": self.require_manual_check,
         }
-        self.events.append(event)
+        from api.runtime import atomic_write_json
 
-    def set_status(self, status: str) -> None:
-        with self._condition:
-            self.status = status
-            self.add_event("status", message=status)
-            self._condition.notify_all()
+        atomic_write_json(request_path(self.run_dir), payload)
 
-    def add_log(self, line: str) -> None:
-        with self._condition:
-            self.logs.append(line)
-            self.add_event("log", message=line)
-            self._condition.notify_all()
+    def launch(self) -> None:
+        cmd = [
+            sys.executable,
+            "-m",
+            "api.worker_entry",
+            "--run-dir",
+            str(self.run_dir),
+        ]
+        self.process = subprocess.Popen(
+            cmd,
+            cwd=str(PROJECT_ROOT),
+            start_new_session=True,
+            text=True,
+        )
+        self.refresh()
 
-    def request_manual_check(self, payload: dict[str, Any]) -> bool:
-        with self._condition:
-            self.manual_check_pending = True
-            self.manual_check_payload = payload
-            self._approval = None
-            self.add_event("manual_check", message="manual_check_required", payload=payload)
-            self._condition.notify_all()
-            while self._approval is None:
-                self._condition.wait()
-            approved = bool(self._approval)
-            self.manual_check_pending = False
-            self._approval = None
-            self._condition.notify_all()
-            return approved
+    def refresh(self) -> None:
+        with self._lock:
+            state = load_state(self.run_dir)
+            if not state:
+                return
+            self.status = state.get("status", self.status)
+            self.result = state.get("result")
+            self.error = state.get("error")
+            self.logs = list(state.get("logs", []))
+            self.events = list(state.get("events", []))
+            self.manual_check_pending = bool(state.get("manual_check_pending", False))
+            self.manual_check_payload = state.get("manual_check_payload")
 
     def resolve_manual_check(self, approved: bool) -> None:
-        with self._condition:
-            self._approval = bool(approved)
-            self.manual_check_pending = False
-            self.add_event("manual_check", message="manual_check_resolved", payload={"approved": bool(approved)})
-            self._condition.notify_all()
+        payload = {"approved": bool(approved)}
+        from api.runtime import atomic_write_json
 
-    def mark_completed(self, result: dict[str, Any]) -> None:
-        with self._condition:
-            self.status = "completed"
-            self.result = result
-            self.add_event("result", message="completed", payload=result)
-            self._condition.notify_all()
+        atomic_write_json(manual_check_path(self.run_dir), payload)
+        self.refresh()
 
-    def mark_failed(self, error: str) -> None:
-        with self._condition:
-            self.status = "failed"
-            self.error = error
-            self.add_event("error", message=error)
-            self._condition.notify_all()
+    def request_abort(self) -> str:
+        self.refresh()
+        if self.status in {"completed", "failed", "aborted"}:
+            return self.status
+
+        if self.process is None:
+            set_error(self.run_dir, "aborted", "Simulation aborted before worker launch.")
+            self.refresh()
+            return self.status
+
+        if self.process.poll() is not None:
+            set_error(self.run_dir, "aborted", "Simulation aborted after worker exit.")
+            self.refresh()
+            return self.status
+
+        # Terminate the whole process group so future multi-core or child-worker
+        # trees are torn down together rather than leaving orphan processes.
+        self._terminate_process_group(force=False)
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if self.process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        if self.process.poll() is None:
+            self._terminate_process_group(force=True)
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+        set_error(self.run_dir, "aborted", "Simulation aborted by user request.")
+        self.refresh()
+        return self.status
+
+    def _terminate_process_group(self, *, force: bool) -> None:
+        if self.process is None:
+            return
+        if self.process.poll() is not None:
+            return
+        if sys.platform != "win32":
+            import os
+
+            sig = signal.SIGKILL if force else signal.SIGTERM
+            try:
+                os.killpg(self.process.pid, sig)
+            except ProcessLookupError:
+                pass
+            return
+        try:
+            if force:
+                self.process.kill()
+            else:
+                self.process.terminate()
+        except ProcessLookupError:
+            pass
 
 
 class RunManager:
@@ -98,28 +155,15 @@ class RunManager:
         record = RunRecord(spec=spec, config=config, require_manual_check=require_manual_check)
         with self._lock:
             self._runs[record.id] = record
-        record.add_event("status", message="queued")
-        record._thread = threading.Thread(target=self._run_worker, args=(record,), daemon=True)
-        record._thread.start()
+        record.launch()
         return record
 
     def get_run(self, run_id: str) -> RunRecord | None:
         with self._lock:
-            return self._runs.get(run_id)
-
-    def _run_worker(self, record: RunRecord) -> None:
-        try:
-            result = run_spec(
-                record.spec,
-                config=record.config,
-                status=record.set_status,
-                log=record.add_log,
-                manual_check=record.request_manual_check,
-                require_manual_check=record.require_manual_check,
-            )
-            record.mark_completed(result)
-        except Exception:
-            record.mark_failed(traceback.format_exc())
+            record = self._runs.get(run_id)
+        if record is not None:
+            record.refresh()
+        return record
 
 
 RUN_MANAGER = RunManager()

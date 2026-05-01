@@ -11,11 +11,26 @@ type ChatPanelProps = {
   messages: ChatMessage[];
   draft: string;
   isBusy: boolean;
+  isLaunching: boolean;
+  launchable: boolean;
+  runId: string | null;
+  runStatus: string | null;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
+  onStartRun: () => void;
+  onAbortRun: () => void;
 };
 
-function renderAssistantCard(response?: AgentTurnResponse) {
+function renderAssistantCard(
+  response: AgentTurnResponse | undefined,
+  options: {
+    launchable: boolean;
+    isLaunching: boolean;
+    runId: string | null;
+    runStatus: string | null;
+    onStartRun: () => void;
+  },
+) {
   if (!response) {
     return null;
   }
@@ -37,7 +52,16 @@ function renderAssistantCard(response?: AgentTurnResponse) {
     return (
       <div className="assistant-card">
         <p className="assistant-card-title">Ready To Launch</p>
-        <p>The simulation spec is complete. You can start the background run from the panel on the right.</p>
+        <p>The simulation spec is complete. Start the background run directly from this message when you’re ready.</p>
+        <div className="action-row assistant-card-actions">
+          <button
+            className="primary-button"
+            disabled={!options.launchable || options.isLaunching || options.runId !== null}
+            onClick={options.onStartRun}
+          >
+            {options.isLaunching ? "Launching..." : options.runId ? `Run ${options.runStatus ?? "active"}` : "Start Run"}
+          </button>
+        </div>
       </div>
     );
   }
@@ -54,7 +78,25 @@ function renderAssistantCard(response?: AgentTurnResponse) {
   return null;
 }
 
-export function ChatPanel({ messages, draft, isBusy, onDraftChange, onSubmit }: ChatPanelProps) {
+export function ChatPanel({
+  messages,
+  draft,
+  isBusy,
+  isLaunching,
+  launchable,
+  runId,
+  runStatus,
+  onDraftChange,
+  onSubmit,
+  onStartRun,
+  onAbortRun,
+}: ChatPanelProps) {
+  const canAbort =
+    runId !== null &&
+    runStatus !== "completed" &&
+    runStatus !== "failed" &&
+    runStatus !== "aborted";
+
   return (
     <section className="chat-shell glass-panel">
       <header className="shell-header">
@@ -78,7 +120,15 @@ export function ChatPanel({ messages, draft, isBusy, onDraftChange, onSubmit }: 
               <article key={message.id} className={`message ${message.role}`}>
                 <div className="message-meta">{message.role === "user" ? "You" : "Assistant"}</div>
                 <div>{message.text}</div>
-                {message.role === "assistant" ? renderAssistantCard(message.response) : null}
+                {message.role === "assistant"
+                  ? renderAssistantCard(message.response, {
+                      launchable,
+                      isLaunching,
+                      runId,
+                      runStatus,
+                      onStartRun,
+                    })
+                  : null}
               </article>
             ))
           )}
@@ -89,13 +139,30 @@ export function ChatPanel({ messages, draft, isBusy, onDraftChange, onSubmit }: 
             <textarea
               value={draft}
               onChange={(event) => onDraftChange(event.target.value)}
-              placeholder="Ask for a simulation, answer a clarification, or say 'use defaults' / 'start'."
+              disabled={canAbort}
+              placeholder={
+                canAbort
+                  ? "A run is active. Use Abort Run below if you want to stop it."
+                  : "Ask for a simulation, answer a clarification, or say 'use defaults' / 'start'."
+              }
             />
             <div className="composer-actions">
-              <span className="helper-text">{isBusy ? "Working through the current turn..." : "Multi-turn session state stays in the browser for now."}</span>
-              <button className="primary-button" disabled={isBusy || draft.trim().length === 0} onClick={onSubmit}>
-                Send
-              </button>
+              <span className="helper-text">
+                {canAbort
+                  ? "The run is active. The main action here switches to abort so you can stop it quickly."
+                  : isBusy
+                    ? "Working through the current turn..."
+                    : "Multi-turn session state stays in the browser for now."}
+              </span>
+              {canAbort ? (
+                <button className="danger-button" onClick={onAbortRun}>
+                  Abort Run
+                </button>
+              ) : (
+                <button className="primary-button" disabled={isBusy || draft.trim().length === 0} onClick={onSubmit}>
+                  Send
+                </button>
+              )}
             </div>
           </div>
         </div>

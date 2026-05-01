@@ -67,6 +67,80 @@ export type RunStateResponse = {
   events: RunEvent[];
   manual_check_pending: boolean;
   manual_check_payload: Record<string, unknown> | null;
+  abort_requested?: boolean;
+};
+
+export type ViewerSnapshotsResponse = {
+  snapshots: string[];
+  has_static: boolean;
+};
+
+export type ViewerQuantumHeatmapResponse = {
+  snapshot: string;
+  property: string;
+  site_ids: number[];
+  x: Array<number | null>;
+  y: Array<number | null>;
+  values: Array<number | null>;
+  qprime_mask: boolean[];
+  color_min: number;
+  color_max: number;
+};
+
+export type ViewerSiteLdosResponse = {
+  site_id: number;
+  snapshot: string;
+  energy: Array<number | null>;
+  ldos: Array<number | null>;
+  Ui: number | null;
+  ni: number | null;
+  ldos_at_0: number | null;
+  ldos_at_Ui: number | null;
+};
+
+export type ViewerSurfaceCutPayload = {
+  snapshot: string;
+  property: string;
+  p0: [number, number];
+  p1: [number, number];
+  cut_width: number;
+};
+
+export type ViewerSurfaceCutResponse = {
+  snapshot: string;
+  property: string;
+  p0: Array<number | null>;
+  p1: Array<number | null>;
+  cut_width: number;
+  distance_along: Array<number | null>;
+  z: Array<number | null>;
+  values: Array<number | null>;
+};
+
+export type ViewerOverlayCurve = {
+  snapshot: string;
+  distance_along: Array<number | null>;
+  Ui: Array<number | null>;
+  is_current: boolean;
+};
+
+export type ViewerLdosCutPayload = {
+  snapshot: string;
+  p0: [number, number];
+  p1: [number, number];
+  cut_width: number;
+  overlay_snapshots: string[];
+};
+
+export type ViewerLdosCutResponse = {
+  snapshot: string;
+  p0: Array<number | null>;
+  p1: Array<number | null>;
+  cut_width: number;
+  distance_along: Array<number | null>;
+  energy: Array<number | null>;
+  ldos_matrix: Array<Array<number | null>>;
+  overlays: ViewerOverlayCurve[];
 };
 
 const API_PREFIX = "/api";
@@ -110,5 +184,53 @@ export function approveManualCheck(runId: string, approved: boolean): Promise<{ 
   return requestJson(`/runs/${runId}/manual-check`, {
     method: "POST",
     body: JSON.stringify({ approved }),
+  });
+}
+
+export function abortRun(runId: string): Promise<{ run_id: string; status: string }> {
+  return requestJson(`/runs/${runId}/abort`, {
+    method: "POST",
+  });
+}
+
+export function fetchSnapshots(runId: string): Promise<ViewerSnapshotsResponse> {
+  return requestJson(`/runs/${runId}/viewer/snapshots`);
+}
+
+export function fetchQuantumHeatmap(
+  runId: string,
+  snapshot: string,
+  property: string,
+): Promise<ViewerQuantumHeatmapResponse> {
+  const search = new URLSearchParams({ snapshot, property });
+  return requestJson(`/runs/${runId}/viewer/quantum-heatmap?${search.toString()}`);
+}
+
+export function fetchSiteLdos(
+  runId: string,
+  snapshot: string,
+  siteId: number,
+): Promise<ViewerSiteLdosResponse> {
+  const search = new URLSearchParams({ snapshot, site_id: String(siteId) });
+  return requestJson(`/runs/${runId}/viewer/site-ldos?${search.toString()}`);
+}
+
+export function fetchSurfaceCut(
+  runId: string,
+  payload: ViewerSurfaceCutPayload,
+): Promise<ViewerSurfaceCutResponse> {
+  return requestJson(`/runs/${runId}/viewer/surface-cut`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchLdosCut(
+  runId: string,
+  payload: ViewerLdosCutPayload,
+): Promise<ViewerLdosCutResponse> {
+  return requestJson(`/runs/${runId}/viewer/ldos-cut`, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
