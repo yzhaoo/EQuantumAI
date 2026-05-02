@@ -77,6 +77,26 @@ class ViewerSnapshotsResponse(BaseModel):
     has_static: bool
 
 
+class ViewerSetupGeometryResponse(BaseModel):
+    site_ids: list[int]
+    coordinates: list[list[float | None]]
+    materials: list[str]
+    qsite_ids: list[int] = Field(default_factory=list)
+    bounds_min: list[float | None]
+    bounds_max: list[float | None]
+    geometry_params: dict[str, Any] = Field(default_factory=dict)
+    gate_info: dict[str, Any] = Field(default_factory=dict)
+
+
+class ViewerSetupFieldResponse(BaseModel):
+    snapshot: str
+    property: str
+    site_ids: list[int]
+    values: list[float | None]
+    color_min: float
+    color_max: float
+
+
 class ViewerQuantumHeatmapResponse(BaseModel):
     snapshot: str
     property: str
@@ -96,8 +116,13 @@ class ViewerSiteLdosResponse(BaseModel):
     ldos: list[float | None]
     Ui: float | None = None
     ni: float | None = None
+    Ci: float | None = None
     ldos_at_0: float | None = None
     ldos_at_Ui: float | None = None
+    consistency_delta_u: list[float | None] = Field(default_factory=list)
+    consistency_poisson: list[float | None] = Field(default_factory=list)
+    consistency_integrated: list[float | None] = Field(default_factory=list)
+    dU_solution: float | None = None
 
 
 class ViewerSurfaceCutRequest(BaseModel):
@@ -150,6 +175,19 @@ class EventItem(BaseModel):
     message: str | None = None
     payload: dict[str, Any] | None = None
     timestamp: str
+
+
+class HistoryRunItem(BaseModel):
+    run_path: str
+    run_name: str
+    profile: str | None = None
+    task: str | None = None
+    status: str
+    has_static: bool
+    snapshot_count: int = 0
+    created_at: str | None = None
+    spec: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
 
 
 class RunStateResponse(BaseModel):

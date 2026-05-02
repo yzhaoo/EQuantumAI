@@ -1,9 +1,12 @@
+import { memo } from "react";
+
 import type { ViewerQuantumHeatmapResponse } from "../../api";
 
 type QuantumHeatmapProps = {
   data: ViewerQuantumHeatmapResponse | null;
   selectedSiteId: number | null;
   onSelectSite: (siteId: number) => void;
+  cutLine?: { p0: [number, number]; p1: [number, number] } | null;
 };
 
 const SVG_SIZE = 420;
@@ -36,7 +39,7 @@ function normalize(values: Array<number | null>) {
   };
 }
 
-export function QuantumHeatmap({ data, selectedSiteId, onSelectSite }: QuantumHeatmapProps) {
+export const QuantumHeatmap = memo(function QuantumHeatmap({ data, selectedSiteId, onSelectSite, cutLine = null }: QuantumHeatmapProps) {
   if (!data) {
     return <div className="viewer-empty">Select a snapshot to see the quantum-layer heatmap.</div>;
   }
@@ -45,15 +48,28 @@ export function QuantumHeatmap({ data, selectedSiteId, onSelectSite }: QuantumHe
   const yRange = normalize(data.y);
   const xSpan = xRange.max - xRange.min || 1;
   const ySpan = yRange.max - yRange.min || 1;
+  const mapX = (x: number) => PADDING + ((x - xRange.min) / xSpan) * (SVG_SIZE - PADDING * 2);
+  const mapY = (y: number) => SVG_SIZE - PADDING - ((y - yRange.min) / ySpan) * (SVG_SIZE - PADDING * 2);
 
   return (
-    <div className="viewer-block">
+    <div className="viewer-block viewer-block-fill">
       <div className="viewer-block-header">
         <h5>Quantum Heatmap</h5>
         <span>{data.property}</span>
       </div>
-      <svg className="heatmap-svg" viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`} role="img" aria-label={`Quantum heatmap for ${data.property}`}>
+      <svg className="heatmap-svg" viewBox={`0 0 ${SVG_SIZE} ${SVG_SIZE}`} preserveAspectRatio="xMidYMid meet" role="img" aria-label={`Quantum heatmap for ${data.property}`}>
         <rect x={0} y={0} width={SVG_SIZE} height={SVG_SIZE} rx={20} fill="rgba(246, 248, 250, 0.95)" />
+        {cutLine ? (
+          <line
+            x1={mapX(cutLine.p0[0])}
+            y1={mapY(cutLine.p0[1])}
+            x2={mapX(cutLine.p1[0])}
+            y2={mapY(cutLine.p1[1])}
+            stroke="rgba(239, 68, 68, 0.9)"
+            strokeWidth={3}
+            strokeDasharray="10 7"
+          />
+        ) : null}
         {data.site_ids.map((siteId, index) => {
           const x = data.x[index];
           const y = data.y[index];
@@ -61,8 +77,8 @@ export function QuantumHeatmap({ data, selectedSiteId, onSelectSite }: QuantumHe
             return null;
           }
 
-          const svgX = PADDING + ((x - xRange.min) / xSpan) * (SVG_SIZE - PADDING * 2);
-          const svgY = SVG_SIZE - PADDING - ((y - yRange.min) / ySpan) * (SVG_SIZE - PADDING * 2);
+          const svgX = mapX(x);
+          const svgY = mapY(y);
           const selected = siteId === selectedSiteId;
 
           return (
@@ -88,4 +104,4 @@ export function QuantumHeatmap({ data, selectedSiteId, onSelectSite }: QuantumHe
       </div>
     </div>
   );
-}
+});

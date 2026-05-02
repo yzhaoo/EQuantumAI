@@ -19,6 +19,8 @@ type ChatPanelProps = {
   onSubmit: () => void;
   onStartRun: () => void;
   onAbortRun: () => void;
+  hideHeader?: boolean;
+  className?: string;
 };
 
 function renderAssistantCard(
@@ -90,6 +92,8 @@ export function ChatPanel({
   onSubmit,
   onStartRun,
   onAbortRun,
+  hideHeader = false,
+  className = "",
 }: ChatPanelProps) {
   const canAbort =
     runId !== null &&
@@ -98,13 +102,15 @@ export function ChatPanel({
     runStatus !== "aborted";
 
   return (
-    <section className="chat-shell glass-panel">
-      <header className="shell-header">
-        <h2 className="shell-title">EQuantum Assistant</h2>
-        <p className="shell-subtitle">
-          Describe a DOS or LDOS run in natural language, then confirm defaults and launch it from the workbench.
-        </p>
-      </header>
+    <section className={`chat-shell ${className}`.trim()}>
+      {!hideHeader ? (
+        <header className="shell-header">
+          <h2 className="shell-title">EQuantum Assistant</h2>
+          <p className="shell-subtitle">
+            Describe a DOS or LDOS run in natural language, then confirm defaults and launch it from the workbench.
+          </p>
+        </header>
+      ) : null}
 
       <div className="chat-layout">
         <div className="messages">

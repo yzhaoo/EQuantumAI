@@ -12,17 +12,20 @@ from api.schemas import (
     AgentTurnResponse,
     CreateRunRequest,
     CreateRunResponse,
+    HistoryRunItem,
     ManualCheckRequest,
     RunStateResponse,
     ViewerLdosCutRequest,
     ViewerLdosCutResponse,
     ViewerQuantumHeatmapResponse,
+    ViewerSetupGeometryResponse,
+    ViewerSetupFieldResponse,
     ViewerSiteLdosResponse,
     ViewerSnapshotsResponse,
     ViewerSurfaceCutRequest,
     ViewerSurfaceCutResponse,
 )
-from api.runtime import resolve_artifact_dir
+from api.runtime import PROJECT_ROOT, list_history_run_dirs, load_json, resolve_artifact_dir, resolve_history_run_dir
 from api.state import RUN_MANAGER
 from simulation import viewer_data
 
@@ -77,6 +80,25 @@ def _viewer_call(fn, *args, **kwargs):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _history_item(run_dir: Path) -> dict:
+    spec = load_json(run_dir / "query_spec.json", default={}) or {}
+    result = load_json(run_dir / "run_summary.json", default={}) or {}
+    snapshots = viewer_data.list_snapshots(run_dir)
+    has_static = (run_dir / "run_static.npz").exists()
+    return {
+        "run_path": run_dir.relative_to(PROJECT_ROOT).as_posix(),
+        "run_name": run_dir.name,
+        "profile": spec.get("profile") or result.get("profile"),
+        "task": spec.get("task") or result.get("task"),
+        "status": "completed" if result else ("saved" if has_static or snapshots else "incomplete"),
+        "has_static": has_static,
+        "snapshot_count": len(snapshots),
+        "created_at": run_dir.name,
+        "spec": spec or None,
+        "result": result or None,
+    }
 
 
 @router.get("/health")
@@ -154,6 +176,22 @@ def get_viewer_snapshots(run_id: str):
     }
 
 
+@router.get("/runs/{run_id}/viewer/setup-geometry", response_model=ViewerSetupGeometryResponse)
+def get_setup_geometry(run_id: str):
+    artifact_dir = _require_artifact_dir(run_id)
+    return _viewer_call(viewer_data.setup_geometry_data, artifact_dir)
+
+
+@router.get("/runs/{run_id}/viewer/setup-field", response_model=ViewerSetupFieldResponse)
+def get_setup_field(
+    run_id: str,
+    snapshot: str = Query(...),
+    property: str = Query(...),
+):
+    artifact_dir = _require_artifact_dir(run_id)
+    return _viewer_call(viewer_data.setup_field_data, artifact_dir, snapshot, property)
+
+
 @router.get("/runs/{run_id}/viewer/quantum-heatmap", response_model=ViewerQuantumHeatmapResponse)
 def get_quantum_heatmap(
     run_id: str,
@@ -200,3 +238,87 @@ def post_ldos_cut(run_id: str, payload: ViewerLdosCutRequest):
         payload.cut_width,
         payload.overlay_snapshots,
     )
+
+
+@router.get("/history/runs", response_model=list[HistoryRunItem])
+def list_history_runs():
+    return [_history_item(run_dir) for run_dir in list_history_run_dirs()]
+
+
+@router.get("/history/runs/{run_path:path}/viewer/snapshots", response_model=ViewerSnapshotsResponse)
+def get_history_viewer_snapshots(run_path: str):
+    artifact_dir = resolve_history_run_dir(run_path)
+    return {
+        "snapshots": _viewer_call(viewer_data.list_snapshots, artifact_dir),
+        "has_static": (artifact_dir / "run_static.npz").exists(),
+    }
+
+
+@router.get("/history/runs/{run_path:path}/viewer/setup-geometry", response_model=ViewerSetupGeometryResponse)
+def get_history_setup_geometry(run_path: str):
+    artifact_dir = resolve_history_run_dir(run_path)
+    return _viewer_call(viewer_data.setup_geometry_data, artifact_dir)
+
+
+@router.get("/history/runs/{run_path:path}/viewer/setup-field", response_model=ViewerSetupFieldResponse)
+def get_history_setup_field(
+    run_path: str,
+    snapshot: str = Query(...),
+    property: str = Query(...),
+):
+    artifact_dir = resolve_history_run_dir(run_path)
+    return _viewer_call(viewer_data.setup_field_data, artifact_dir, snapshot, property)
+
+
+@router.get("/history/runs/{run_path:path}/viewer/quantum-heatmap", response_model=ViewerQuantumHeatmapResponse)
+def get_history_quantum_heatmap(
+    run_path: str,
+    snapshot: str = Query(...),
+    property: str = Query(...),
+):
+    artifact_dir = resolve_history_run_dir(run_path)
+    return _viewer_call(viewer_data.quantum_heatmap_data, artifact_dir, snapshot, property)
+
+
+@router.get("/history/runs/{run_path:path}/viewer/site-ldos", response_model=ViewerSiteLdosResponse)
+def get_history_site_ldos(
+    run_path: str,
+    snapshot: str = Query(...),
+    site_id: int = Query(...),
+):
+    artifact_dir = resolve_history_run_dir(run_path)
+    return _viewer_call(viewer_data.local_ldos_data, artifact_dir, snapshot, site_id)
+
+
+@router.post("/history/runs/{run_path:path}/viewer/surface-cut", response_model=ViewerSurfaceCutResponse)
+def post_history_surface_cut(run_path: str, payload: ViewerSurfaceCutRequest):
+    artifact_dir = resolve_history_run_dir(run_path)
+    return _viewer_call(
+        viewer_data.surface_cut_data,
+        artifact_dir,
+        payload.snapshot,
+        payload.property,
+        payload.p0,
+        payload.p1,
+        payload.cut_width,
+    )
+
+
+@router.post("/history/runs/{run_path:path}/viewer/ldos-cut", response_model=ViewerLdosCutResponse)
+def post_history_ldos_cut(run_path: str, payload: ViewerLdosCutRequest):
+    artifact_dir = resolve_history_run_dir(run_path)
+    return _viewer_call(
+        viewer_data.ldos_cut_data,
+        artifact_dir,
+        payload.snapshot,
+        payload.p0,
+        payload.p1,
+        payload.cut_width,
+        payload.overlay_snapshots,
+    )
+
+
+@router.get("/history/runs/{run_path:path}", response_model=HistoryRunItem)
+def get_history_run(run_path: str):
+    run_dir = resolve_history_run_dir(run_path)
+    return _history_item(run_dir)

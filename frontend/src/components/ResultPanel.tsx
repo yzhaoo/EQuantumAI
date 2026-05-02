@@ -76,7 +76,7 @@ export function ResultPanel({
           </div>
 
           {runId && ["building_system", "initializing_fsc", "manual_check_required", "solving", "exporting_artifacts", "completed"].includes(runState?.status ?? "") ? (
-            <SnapshotViewer runId={runId} runStatus={runState?.status ?? null} />
+            <SnapshotViewer source={{ kind: "live", runId, runStatus: runState?.status ?? null }} />
           ) : null}
 
           <div className="result-card">

@@ -36,6 +36,8 @@ def _clean_scalar(value: Any) -> Any:
         return float(value)
     if isinstance(value, (int, str, bool)) or value is None:
         return value
+    if isinstance(value, dict):
+        return {str(key): _clean_scalar(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_clean_scalar(item) for item in value]
     return value
@@ -81,6 +83,59 @@ def load_run_static(run_dir: str | os.PathLike[str]) -> dict[str, Any]:
         "site_ids_all": np.asarray(static["site_ids_all"], dtype=int),
         "coords_all": np.asarray(static["coords_all"], dtype=float),
         "raw": static,
+    }
+
+
+def setup_geometry_data(run_dir: str | os.PathLike[str]) -> dict[str, Any]:
+    static_data = load_run_static(run_dir)
+    coords_all = np.asarray(static_data["coords_all"], dtype=float)
+    if coords_all.size == 0:
+        raise ValueError("Static geometry does not contain any coordinates.")
+
+    raw = static_data.get("raw", {})
+    materials = raw.get("materials_all", np.full(len(coords_all), "unknown", dtype=object))
+    geometry_params = raw.get("geometry_params", {})
+    gate_info = raw.get("gate_info", {})
+
+    return {
+        "site_ids": _as_int_list(static_data["site_ids_all"]),
+        "coordinates": [[_clean_scalar(value) for value in row] for row in coords_all.tolist()],
+        "materials": [str(value) for value in np.asarray(materials, dtype=object).tolist()],
+        "qsite_ids": _as_int_list(static_data["Qsites"]),
+        "bounds_min": _as_float_list(np.nanmin(coords_all, axis=0)),
+        "bounds_max": _as_float_list(np.nanmax(coords_all, axis=0)),
+        "geometry_params": _clean_scalar(geometry_params),
+        "gate_info": _clean_scalar(gate_info),
+    }
+
+
+def _range_from_values(values: np.ndarray) -> tuple[float, float]:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return 0.0, 1.0
+    low = float(np.nanmin(finite))
+    high = float(np.nanmax(finite))
+    if np.isclose(low, high):
+        pad = 1e-12 if low == 0 else 1e-6 * abs(low)
+        low -= pad
+        high += pad
+    return low, high
+
+
+def setup_field_data(run_dir: str | os.PathLike[str], snapshot_name: str, prop_name: str) -> dict[str, Any]:
+    static_data = load_run_static(run_dir)
+    snapshot_data = load_snapshot(run_dir, snapshot_name)
+    previous = _previous_snapshot_data(run_dir, snapshot_name)
+    values_all = scalar_values_surface(static_data, snapshot_data, snapshot_name, previous, prop_name)
+    color_min, color_max = _range_from_values(values_all)
+    return {
+        "snapshot": snapshot_name,
+        "property": prop_name,
+        "site_ids": _as_int_list(static_data["site_ids_all"]),
+        "values": _as_float_list(values_all),
+        "color_min": float(color_min),
+        "color_max": float(color_max),
     }
 
 
@@ -298,8 +353,27 @@ def local_ldos_data(run_dir: str | os.PathLike[str], snapshot_name: str, site_id
     ldos = np.asarray(snapshot_data["ildos"][local_index][1], dtype=float)
     ui = float(np.asarray(snapshot_data["Ui"], dtype=float)[int(site_id)])
     ni = float(np.asarray(snapshot_data["ni"], dtype=float)[int(site_id)])
+    qprime = np.asarray(snapshot_data["Qprime"], dtype=int)
+    ci_values = np.asarray(snapshot_data["Ci"], dtype=float)
+    qprime_matches = np.where(qprime[: len(ci_values)] == int(site_id))[0]
+    ci = float(ci_values[int(qprime_matches[0])]) if len(qprime_matches) else np.nan
     ldos_at_0 = float(np.interp(0.0, energy, ldos, left=np.nan, right=np.nan))
     ldos_at_ui = float(np.interp(ui, energy, ldos, left=np.nan, right=np.nan))
+
+    x_dis = energy - ui
+    y_dis = ldos
+    ildos_dis = np.zeros_like(y_dis, dtype=float)
+    if len(y_dis) > 1:
+        ildos_dis[1:] = np.cumsum(0.5 * (y_dis[1:] + y_dis[:-1]) * np.diff(x_dis))
+
+    if np.isfinite(ci):
+        poisson_prediction = ni + ci * x_dis
+        diff = np.abs(poisson_prediction - ildos_dis)
+        finite_mask = np.isfinite(diff)
+        d_u_solution = float(x_dis[np.where(finite_mask)[0][int(np.argmin(diff[finite_mask]))]]) if np.any(finite_mask) else np.nan
+    else:
+        poisson_prediction = np.full_like(x_dis, np.nan, dtype=float)
+        d_u_solution = np.nan
 
     return {
         "site_id": int(site_id),
@@ -308,8 +382,13 @@ def local_ldos_data(run_dir: str | os.PathLike[str], snapshot_name: str, site_id
         "ldos": _as_float_list(ldos),
         "Ui": _clean_scalar(ui),
         "ni": _clean_scalar(ni),
+        "Ci": _clean_scalar(ci),
         "ldos_at_0": _clean_scalar(ldos_at_0),
         "ldos_at_Ui": _clean_scalar(ldos_at_ui),
+        "consistency_delta_u": _as_float_list(x_dis),
+        "consistency_poisson": _as_float_list(poisson_prediction),
+        "consistency_integrated": _as_float_list(ildos_dis),
+        "dU_solution": _clean_scalar(d_u_solution),
     }
 
 

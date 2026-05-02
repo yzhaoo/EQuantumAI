@@ -70,9 +70,42 @@ export type RunStateResponse = {
   abort_requested?: boolean;
 };
 
+export type HistoryRunItem = {
+  run_path: string;
+  run_name: string;
+  profile: string | null;
+  task: string | null;
+  status: string;
+  has_static: boolean;
+  snapshot_count: number;
+  created_at: string | null;
+  spec: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+};
+
 export type ViewerSnapshotsResponse = {
   snapshots: string[];
   has_static: boolean;
+};
+
+export type ViewerSetupGeometryResponse = {
+  site_ids: number[];
+  coordinates: Array<Array<number | null>>;
+  materials: string[];
+  qsite_ids: number[];
+  bounds_min: Array<number | null>;
+  bounds_max: Array<number | null>;
+  geometry_params: Record<string, unknown>;
+  gate_info: Record<string, unknown>;
+};
+
+export type ViewerSetupFieldResponse = {
+  snapshot: string;
+  property: string;
+  site_ids: number[];
+  values: Array<number | null>;
+  color_min: number;
+  color_max: number;
 };
 
 export type ViewerQuantumHeatmapResponse = {
@@ -94,8 +127,13 @@ export type ViewerSiteLdosResponse = {
   ldos: Array<number | null>;
   Ui: number | null;
   ni: number | null;
+  Ci: number | null;
   ldos_at_0: number | null;
   ldos_at_Ui: number | null;
+  consistency_delta_u: Array<number | null>;
+  consistency_poisson: Array<number | null>;
+  consistency_integrated: Array<number | null>;
+  dU_solution: number | null;
 };
 
 export type ViewerSurfaceCutPayload = {
@@ -197,6 +235,44 @@ export function fetchSnapshots(runId: string): Promise<ViewerSnapshotsResponse> 
   return requestJson(`/runs/${runId}/viewer/snapshots`);
 }
 
+export function fetchHistoryRuns(): Promise<HistoryRunItem[]> {
+  return requestJson("/history/runs");
+}
+
+export function fetchHistoryRun(runPath: string): Promise<HistoryRunItem> {
+  return requestJson(`/history/runs/${encodeURIComponent(runPath)}`);
+}
+
+export function fetchHistorySnapshots(runPath: string): Promise<ViewerSnapshotsResponse> {
+  return requestJson(`/history/runs/${encodeURIComponent(runPath)}/viewer/snapshots`);
+}
+
+export function fetchSetupGeometry(runId: string): Promise<ViewerSetupGeometryResponse> {
+  return requestJson(`/runs/${runId}/viewer/setup-geometry`);
+}
+
+export function fetchHistorySetupGeometry(runPath: string): Promise<ViewerSetupGeometryResponse> {
+  return requestJson(`/history/runs/${encodeURIComponent(runPath)}/viewer/setup-geometry`);
+}
+
+export function fetchSetupField(
+  runId: string,
+  snapshot: string,
+  property: string,
+): Promise<ViewerSetupFieldResponse> {
+  const search = new URLSearchParams({ snapshot, property });
+  return requestJson(`/runs/${runId}/viewer/setup-field?${search.toString()}`);
+}
+
+export function fetchHistorySetupField(
+  runPath: string,
+  snapshot: string,
+  property: string,
+): Promise<ViewerSetupFieldResponse> {
+  const search = new URLSearchParams({ snapshot, property });
+  return requestJson(`/history/runs/${encodeURIComponent(runPath)}/viewer/setup-field?${search.toString()}`);
+}
+
 export function fetchQuantumHeatmap(
   runId: string,
   snapshot: string,
@@ -206,6 +282,15 @@ export function fetchQuantumHeatmap(
   return requestJson(`/runs/${runId}/viewer/quantum-heatmap?${search.toString()}`);
 }
 
+export function fetchHistoryQuantumHeatmap(
+  runPath: string,
+  snapshot: string,
+  property: string,
+): Promise<ViewerQuantumHeatmapResponse> {
+  const search = new URLSearchParams({ snapshot, property });
+  return requestJson(`/history/runs/${encodeURIComponent(runPath)}/viewer/quantum-heatmap?${search.toString()}`);
+}
+
 export function fetchSiteLdos(
   runId: string,
   snapshot: string,
@@ -213,6 +298,15 @@ export function fetchSiteLdos(
 ): Promise<ViewerSiteLdosResponse> {
   const search = new URLSearchParams({ snapshot, site_id: String(siteId) });
   return requestJson(`/runs/${runId}/viewer/site-ldos?${search.toString()}`);
+}
+
+export function fetchHistorySiteLdos(
+  runPath: string,
+  snapshot: string,
+  siteId: number,
+): Promise<ViewerSiteLdosResponse> {
+  const search = new URLSearchParams({ snapshot, site_id: String(siteId) });
+  return requestJson(`/history/runs/${encodeURIComponent(runPath)}/viewer/site-ldos?${search.toString()}`);
 }
 
 export function fetchSurfaceCut(
@@ -225,11 +319,31 @@ export function fetchSurfaceCut(
   });
 }
 
+export function fetchHistorySurfaceCut(
+  runPath: string,
+  payload: ViewerSurfaceCutPayload,
+): Promise<ViewerSurfaceCutResponse> {
+  return requestJson(`/history/runs/${encodeURIComponent(runPath)}/viewer/surface-cut`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function fetchLdosCut(
   runId: string,
   payload: ViewerLdosCutPayload,
 ): Promise<ViewerLdosCutResponse> {
   return requestJson(`/runs/${runId}/viewer/ldos-cut`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchHistoryLdosCut(
+  runPath: string,
+  payload: ViewerLdosCutPayload,
+): Promise<ViewerLdosCutResponse> {
+  return requestJson(`/history/runs/${encodeURIComponent(runPath)}/viewer/ldos-cut`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

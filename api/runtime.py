@@ -9,6 +9,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUNS_ROOT = Path(tempfile.gettempdir()) / "equantum_api_runs"
+DATAS_ROOT = PROJECT_ROOT / "Datas"
 
 REQUEST_FILENAME = "request.json"
 STATE_FILENAME = "state.json"
@@ -46,6 +47,30 @@ def resolve_artifact_dir(run_dir: Path) -> Path | None:
     if not candidate:
         return None
     return Path(candidate)
+
+
+def list_history_run_dirs() -> list[Path]:
+    if not DATAS_ROOT.exists():
+        return []
+    return sorted(
+        (
+            path
+            for path in DATAS_ROOT.glob("*/setup/agent_runs/*")
+            if path.is_dir()
+        ),
+        reverse=True,
+    )
+
+
+def resolve_history_run_dir(run_path: str) -> Path:
+    candidate = (PROJECT_ROOT / run_path).resolve()
+    if not candidate.is_dir():
+        raise FileNotFoundError(f"Saved run directory not found: {run_path}")
+    try:
+        candidate.relative_to(DATAS_ROOT)
+    except ValueError as exc:
+        raise FileNotFoundError(f"Saved run directory is outside Datas: {run_path}") from exc
+    return candidate
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
