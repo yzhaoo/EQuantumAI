@@ -54,7 +54,7 @@ def _static_from_npz(npz_data) -> dict[str, Any]:
 
 def _snapshot_file_candidates(run_dir: str | os.PathLike[str]) -> list[Path]:
     root = Path(run_dir)
-    candidates = sorted(root.glob("*.npz"))
+    candidates = sorted(root.glob("*.npz"), key=lambda p: p.stat().st_mtime)
     result: list[Path] = []
     for path in candidates:
         if path.name == "run_static.npz":

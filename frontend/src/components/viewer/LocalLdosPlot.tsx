@@ -1,50 +1,11 @@
 import { memo } from "react";
-
+import Plot from "react-plotly.js";
 import type { ViewerSiteLdosResponse } from "../../api";
 
 type LocalLdosPlotProps = {
   data: ViewerSiteLdosResponse | null;
   isLoading?: boolean;
 };
-
-const WIDTH = 420;
-const HEIGHT = 180;
-const PADDING_X = 36;
-const PADDING_Y = 24;
-
-function normalize(values: number[]) {
-  const finite = values.filter((value) => Number.isFinite(value));
-  if (finite.length === 0) {
-    return { min: 0, max: 1 };
-  }
-  const min = Math.min(...finite);
-  const max = Math.max(...finite);
-  if (min === max) {
-    return { min: min - 1, max: max + 1 };
-  }
-  return { min, max };
-}
-
-function scaleX(x: number, range: { min: number; max: number }) {
-  return PADDING_X + ((x - range.min) / (range.max - range.min || 1)) * (WIDTH - PADDING_X * 2);
-}
-
-function scaleY(y: number, range: { min: number; max: number }) {
-  return HEIGHT - PADDING_Y - ((y - range.min) / (range.max - range.min || 1)) * (HEIGHT - PADDING_Y * 2);
-}
-
-function buildPolyline(xs: number[], ys: number[]) {
-  const xRange = normalize(xs);
-  const yRange = normalize(ys);
-  return xs
-    .map((x, index) => `${scaleX(x, xRange)},${scaleY(ys[index], yRange)}`)
-    .join(" ");
-}
-
-function axisX(value: number, range: { min: number; max: number }) {
-  const scaled = scaleX(value, range);
-  return Math.min(WIDTH - PADDING_X, Math.max(PADDING_X, scaled));
-}
 
 function Chart({
   title,
@@ -71,33 +32,76 @@ function Chart({
   markerX?: number | null;
   markerColor?: string;
 }) {
-  const xRange = normalize(xs);
-  const yRange = normalize([...ysA, ...(ysB ?? [])]);
-  const polyA = buildPolyline(xs, ysA);
-  const polyB = ysB ? buildPolyline(xs, ysB) : null;
-  const zeroX = axisX(0, xRange);
-  const marker = markerX === null || markerX === undefined ? null : axisX(markerX, xRange);
+  const traces: any[] = [
+    {
+      x: xs,
+      y: ysA,
+      type: "scatter",
+      mode: "lines",
+      name: labelA,
+      line: { color: colorA, width: 2.4 },
+    },
+  ];
+
+  if (ysB && colorB && labelB) {
+    traces.push({
+      x: xs,
+      y: ysB,
+      type: "scatter",
+      mode: "lines",
+      name: labelB,
+      line: { color: colorB, width: 2.2 },
+    });
+  }
+
+  const shapes: any[] = [
+    {
+      type: "line",
+      x0: 0,
+      x1: 0,
+      y0: 0,
+      y1: 1,
+      yref: "paper",
+      line: { color: "rgba(15, 23, 42, 0.28)", width: 1, dash: "dot" },
+    },
+  ];
+
+  if (markerX !== null && markerX !== undefined) {
+    shapes.push({
+      type: "line",
+      x0: markerX,
+      x1: markerX,
+      y0: 0,
+      y1: 1,
+      yref: "paper",
+      line: { color: markerColor ?? "rgba(239, 68, 68, 0.55)", width: 1.5, dash: "dot" },
+    });
+  }
 
   return (
-    <div className="viewer-subplot">
+    <div className="viewer-subplot" style={{ display: "flex", flexDirection: "column" }}>
       <div className="viewer-subplot-header">
         <strong>{title}</strong>
         <span>{subtitle}</span>
       </div>
-      <svg className="ldos-svg" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none" role="img" aria-label={title}>
-        <rect x={0} y={0} width={WIDTH} height={HEIGHT} rx={18} fill="rgba(246, 248, 250, 0.96)" />
-        <line x1={PADDING_X} y1={HEIGHT - PADDING_Y} x2={WIDTH - PADDING_X} y2={HEIGHT - PADDING_Y} stroke="rgba(71, 85, 105, 0.5)" />
-        <line x1={PADDING_X} y1={PADDING_Y} x2={PADDING_X} y2={HEIGHT - PADDING_Y} stroke="rgba(71, 85, 105, 0.5)" />
-        <line x1={zeroX} y1={PADDING_Y} x2={zeroX} y2={HEIGHT - PADDING_Y} stroke="rgba(15, 23, 42, 0.28)" strokeDasharray="5 5" />
-        {marker !== null ? (
-          <line x1={marker} y1={PADDING_Y} x2={marker} y2={HEIGHT - PADDING_Y} stroke={markerColor ?? "rgba(239, 68, 68, 0.55)"} strokeDasharray="5 5" />
-        ) : null}
-        <polyline fill="none" stroke={colorA} strokeWidth={2.4} points={polyA} />
-        {polyB ? <polyline fill="none" stroke={colorB} strokeWidth={2.2} points={polyB} /> : null}
-      </svg>
-      <div className="viewer-inline-legend">
-        <span><i style={{ background: colorA }} />{labelA}</span>
-        {labelB && colorB ? <span><i style={{ background: colorB }} />{labelB}</span> : null}
+      <div style={{ flex: 1, minHeight: "180px" }}>
+        <Plot
+          data={traces}
+          layout={{
+            autosize: true,
+            margin: { l: 40, r: 10, t: 10, b: 20 },
+            paper_bgcolor: "rgba(246, 248, 250, 0)",
+            plot_bgcolor: "rgba(246, 248, 250, 0.96)",
+            xaxis: { zeroline: false },
+            yaxis: { zeroline: false },
+            showlegend: true,
+            legend: { orientation: "h", y: -0.2, x: 0 },
+            shapes,
+          }}
+          useResizeHandler={true}
+          style={{ width: "100%", height: "100%" }}
+          config={{ displayModeBar: false, displaylogo: false }}
+        />
       </div>
     </div>
   );
@@ -139,7 +143,7 @@ export const LocalLdosPlot = memo(function LocalLdosPlot({ data, isLoading = fal
         <h5>Onsite Plots</h5>
         <span>site {data.site_id}</span>
       </div>
-      <div className="viewer-stack-plots">
+      <div className="viewer-stack-plots" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
         <Chart
           title="Local consistency"
           subtitle={data.Ci !== null ? `Ci ${data.Ci.toPrecision(4)}` : "Ci n/a"}
@@ -151,7 +155,7 @@ export const LocalLdosPlot = memo(function LocalLdosPlot({ data, isLoading = fal
           labelA="Poisson"
           labelB="Integrated LDOS"
           markerX={data.dU_solution}
-          markerColor="rgba(15, 23, 42, 0.45)"
+          markerColor="rgba(15, 23, 42, 0.95)"
         />
         <Chart
           title="LDOS"
@@ -164,7 +168,7 @@ export const LocalLdosPlot = memo(function LocalLdosPlot({ data, isLoading = fal
           markerColor="rgba(239, 68, 68, 0.55)"
         />
       </div>
-      <div className="viewer-metrics">
+      <div className="viewer-metrics" style={{ marginTop: "12px" }}>
         <span>Ui: {data.Ui ?? "n/a"}</span>
         <span>ni: {data.ni ?? "n/a"}</span>
         <span>Ci: {data.Ci ?? "n/a"}</span>

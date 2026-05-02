@@ -19,6 +19,7 @@ import {
 import { LdosCutPlot, SurfaceCutPlot } from "./LineCutPlot";
 import { LocalLdosPlot } from "./LocalLdosPlot";
 import { QuantumHeatmap } from "./QuantumHeatmap";
+import { SnapshotTimeline } from "./SnapshotTimeline";
 
 type SnapshotViewerProps = {
   source:
@@ -33,7 +34,7 @@ type SnapshotViewerProps = {
       };
 };
 
-type PanelId = "site" | "surface" | "ldosCut";
+type PanelId = "site" | "surface" | "ldosCut" | "displayData" | "metrics";
 type PanelLayout = Record<PanelId, { x: number; y: number; w: number; h: number; z: number }>;
 type PointerAction =
   | {
@@ -64,10 +65,23 @@ type PointerAction =
 const QUANTUM_PROPERTIES = ["Ui", "ni", "Ci", "Qprime_mask", "ΔUi", "LDOS@0", "LDOS@Ui"] as const;
 const SURFACE_PROPERTY = "Ui";
 const DEFAULT_LAYOUT: PanelLayout = {
-  site: { x: 0.68, y: 0.06, w: 0.3, h: 0.42, z: 2 },
-  surface: { x: 0.3, y: 0.78, w: 0.36, h: 0.18, z: 2 },
-  ldosCut: { x: 0.74, y: 0.58, w: 0.24, h: 0.32, z: 2 },
+  displayData: { x: 0.02, y: 0.14, w: 0.14, h: 0.22, z: 2 },
+  metrics: { x: 0.02, y: 0.37, w: 0.14, h: 0.14, z: 2 },
+  surface: { x: 0.02, y: 0.70, w: 0.32, h: 0.28, z: 2 },
+  site: { x: 0.72, y: 0.02, w: 0.27, h: 0.46, z: 2 },
+  ldosCut: { x: 0.72, y: 0.50, w: 0.27, h: 0.48, z: 2 },
 };
+
+const PROPERTY_LABELS: Record<string, string> = {
+  "Ui": "Ui",
+  "ni": "ni",
+  "Ci": "Ci",
+  "Qprime_mask": "Active Quantum Area",
+  "ΔUi": "Delta Ui",
+  "LDOS@0": "LDOS at 0",
+  "LDOS@Ui": "LDOS at Ui"
+};
+
 
 function isLiveStatus(status: string | null) {
   return status !== null && !["completed", "failed", "aborted"].includes(status);
@@ -106,7 +120,6 @@ function clamp(value: number, min: number, max: number) {
 
 const FloatingPanel = memo(function FloatingPanel({
   title,
-  subtitle,
   layout,
   onDragStart,
   onResizeStart,
@@ -131,19 +144,21 @@ const FloatingPanel = memo(function FloatingPanel({
         height: `${layout.h * 100}%`,
         zIndex: layout.z,
       }}
-      onPointerDown={onFocus}
+      onPointerDown={(e) => {
+        onFocus();
+        onDragStart(e);
+      }}
     >
-      <div className="floating-panel-handle" onPointerDown={onDragStart}>
-        <div className="floating-panel-title">
-          <strong>{title}</strong>
-          {subtitle ? <span>{subtitle}</span> : null}
-        </div>
-        <button className="floating-panel-grip" type="button" aria-label={`Move ${title}`}>
-          drag
-        </button>
-      </div>
       <div className="floating-panel-body">{children}</div>
-      <button className="floating-panel-resize" type="button" aria-label={`Resize ${title}`} onPointerDown={onResizeStart} />
+      <button 
+        className="floating-panel-resize" 
+        type="button" 
+        aria-label={`Resize ${title}`} 
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onResizeStart(e);
+        }} 
+      />
     </div>
   );
 });
@@ -341,6 +356,9 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
         if (cancelled) {
           return;
         }
+
+
+
         setSnapshots((current) => (arraysEqual(current, response.snapshots) ? current : response.snapshots));
         setHasStatic(response.has_static);
         setSnapshot((current) => {
@@ -570,53 +588,9 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
   }, [hasLoadedSnapshotsOnce, hasStatic, isLoadingSnapshots, snapshots.length]);
 
   return (
-    <section className="stage-card simulation-stage">
-      <div className="stage-header">
-        <h2>Snapshot Info</h2>
-      </div>
+    <section className="stage-card simulation-stage compact-stage">
 
-      <div className="viewer-toolbar">
-        <div className="snapshot-strip">
-          <span>Snapshot</span>
-          <div className="snapshot-strip-buttons">
-            {snapshots.length === 0 ? <button type="button" className="snapshot-pill active">Waiting</button> : null}
-            {snapshots.map((name) => (
-              <button
-                key={name}
-                type="button"
-                className={`snapshot-pill ${snapshot === name ? "active" : ""}`}
-                onClick={() => setSnapshot(name)}
-              >
-                {name.replace(".npz", "")}
-              </button>
-            ))}
-          </div>
-        </div>
 
-        <div className="viewer-toolbar-controls">
-          <label>
-            Display data
-            <select value={property} onChange={(event) => setProperty(event.target.value as (typeof QUANTUM_PROPERTIES)[number])}>
-              {QUANTUM_PROPERTIES.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Cut width
-            <input
-              type="range"
-              min="0.01"
-              max="0.12"
-              step="0.01"
-              value={cutWidth}
-              onChange={(event) => setCutWidth(Number(event.target.value))}
-            />
-          </label>
-        </div>
-      </div>
 
       {error ? <div className="viewer-error">{error}</div> : null}
       {statusText ? <div className="viewer-empty">{statusText}</div> : null}
@@ -634,20 +608,12 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
                 cutLine={cutLine}
               />
             )}
-            <div className="simulation-overlay-metrics">
-              <div className="viewer-block viewer-block-fill">
-                <div className="viewer-block-header">
-                  <h5>Snapshot Metrics</h5>
-                  <span>selected site</span>
-                </div>
-                <div className="viewer-metrics viewer-metrics-stack viewer-metrics-compact">
-                  <span>Site: {selectedSiteId ?? "-"}</span>
-                  <span>Cut width: {cutWidth.toFixed(2)}</span>
-                  <span>Snapshot: {snapshot || "-"}</span>
-                  <span>Property: {property}</span>
-                  <span>Static ref: {hasStatic ? "ready" : "pending"}</span>
-                </div>
-              </div>
+            <div className="timeline-overlay">
+              <SnapshotTimeline
+                snapshots={snapshots}
+                activeSnapshot={snapshot}
+                onSelect={setSnapshot}
+              />
             </div>
           </div>
 
@@ -682,6 +648,57 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
             onResizeStart={(event) => startResize("ldosCut", event)}
           >
             <LdosCutPlot data={ldosCut} isLoading={isLoadingLdosCut} />
+          </FloatingPanel>
+
+
+          <FloatingPanel
+            title="Display Data"
+            layout={layout.displayData}
+            onFocus={() => focusPanel("displayData")}
+            onDragStart={(event) => startDrag("displayData", event)}
+            onResizeStart={(event) => startResize("displayData", event)}
+          >
+            <div className="display-data-panel">
+              <h3 className="panel-title">Display Data</h3>
+              <div className="property-pills">
+                {QUANTUM_PROPERTIES.map((item) => (
+                  <button
+                    key={item}
+                    className={`property-pill ${property === item ? "active" : ""}`}
+                    onClick={() => setProperty(item)}
+                  >
+                    {PROPERTY_LABELS[item] || item}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </FloatingPanel>
+
+          <FloatingPanel
+            title="Metrics"
+            layout={layout.metrics}
+            onFocus={() => focusPanel("metrics")}
+            onDragStart={(event) => startDrag("metrics", event)}
+            onResizeStart={(event) => startResize("metrics", event)}
+          >
+            <div className="metrics-panel">
+              <div className="metric-row">
+                <span>Selected Site id:</span>
+                <span className="metric-value">{selectedSiteId ?? "-"}</span>
+              </div>
+              <div className="metric-row">
+                <span>Linecut Width:</span>
+                <div className="number-stepper">
+                  <button className="stepper-btn" onClick={() => setCutWidth(Math.max(0.01, cutWidth - 0.01))}>-</button>
+                  <span className="stepper-val">{cutWidth.toFixed(2)}</span>
+                  <button className="stepper-btn" onClick={() => setCutWidth(Math.min(0.20, cutWidth + 0.01))}>+</button>
+                </div>
+              </div>
+              <div className="metric-row">
+                <span>Linecut y:</span>
+                <span className="metric-value">{cutLine ? cutLine.p0[1].toFixed(2) : "-"}</span>
+              </div>
+            </div>
           </FloatingPanel>
         </div>
       ) : null}
