@@ -196,28 +196,20 @@ button {
 
 .setup-viewer-toolbar {
   position: absolute;
-  top: 98px;
+  top: 208px;
   left: 18px;
-  display: grid;
-  grid-template-columns: minmax(150px, auto);
-  gap: 10px;
   z-index: 2;
+  padding: 18px 16px 14px;
+  border-radius: 18px;
+  flex-wrap: wrap;
+  width: fit-content;
+  max-width: 150px;
+  background: rgba(255, 255, 255, 0.80);
+  border: 1px solid rgba(255, 255, 255, 0.8);
 }
 
-.setup-viewer-toolbar label {
-  display: grid;
-  gap: 6px;
-  padding: 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid var(--border-strong);
-  box-shadow: 0 12px 28px rgba(17, 24, 39, 0.08);
-  font-size: 0.8rem;
-  font-weight: 700;
-}
-
-.setup-viewer-toolbar select {
-  min-width: 0;
+.setup-viewer-toolbar .display-data-panel {
+  gap: 14px;
 }
 
 .setup-timeline-empty {

@@ -598,16 +598,21 @@ export function SetupGeometryViewer({ source }: SetupGeometryViewerProps) {
       </div>
 
       <div className="setup-viewer-toolbar">
-        <label>
-          Display
-          <select value={propertyMode} onChange={(event) => setPropertyMode(event.target.value as SetupPropertyMode)}>
+        <div className="display-data-panel">
+          <h3 className="panel-title">Display</h3>
+          <div className="property-pills">
             {SETUP_PROPERTY_OPTIONS.map((item) => (
-              <option key={item} value={item}>
-                {item === "material" ? "material" : item}
-              </option>
+              <button
+                key={item}
+                type="button"
+                className={`property-pill ${propertyMode === item ? "active" : ""}`}
+                onClick={() => setPropertyMode(item)}
+              >
+                {item === "material" ? "Material" : item}
+              </button>
             ))}
-          </select>
-        </label>
+          </div>
+        </div>
       </div>
 
       {snapshots.length > 0 ? (
