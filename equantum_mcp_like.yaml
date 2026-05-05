@@ -1,0 +1,221 @@
+version: "0.1"
+name: "equantum-mcp-like"
+purpose: "Planning-oriented tool contract for multi-step EQuantum simulation workflows."
+
+design_notes:
+  - "Expose task-level tools to the agent instead of raw object lifecycle details."
+  - "Keep simulator primitives such as FSC.update_BC(...) behind safer wrappers."
+  - "Prefer immutable spec/run handles so the agent can branch experiments safely."
+
+entities:
+  spec_handle:
+    description: "Serializable simulation specification the agent can create, clone, update, validate, and run."
+  run_handle:
+    description: "A completed or in-progress run with artifacts, logs, metadata, and viewer-compatible outputs."
+  comparison_handle:
+    description: "Structured comparison result between two runs."
+
+tools:
+  - name: "list_profiles"
+    description: "Return available profiles, device shapes, supported lattice types, and defaults."
+    inputs: {}
+    outputs:
+      profiles: "list[profile_summary]"
+    implementation_hint:
+      module: "simulation/profiles.py"
+      symbols:
+        - "PROFILES"
+
+  - name: "create_spec"
+    description: "Create a new simulation spec from explicit values or partial natural-language intent."
+    inputs:
+      profile: "string = dotgate_center"
+      task: "string | null"
+      lattice_type: "string | null"
+      device_shape: "string | null"
+      backgate_voltage: "float | null"
+      magnetic_field_T: "float | null"
+    outputs:
+      spec: "spec_handle"
+    implementation_hint:
+      module: "simulation/profiles.py"
+      symbols:
+        - "empty_spec"
+        - "normalize_spec"
+
+  - name: "clone_spec"
+    description: "Copy an existing spec so the agent can branch an experiment."
+    inputs:
+      spec: "spec_handle"
+    outputs:
+      spec: "spec_handle"
+
+  - name: "update_spec"
+    description: "Apply partial field updates to a spec."
+    inputs:
+      spec: "spec_handle"
+      updates:
+        task: "string | null"
+        lattice_type: "string | null"
+        device_shape: "string | null"
+        backgate_voltage: "float | null"
+        magnetic_field_T: "float | null"
+        spacing0: "float | null"
+        density_k: "float | null"
+        dielectric_constant: "float | null"
+        gate_potential: "float | null"
+        convergence_tol: "list[float] | null"
+        Ncore: "int | null"
+        eta: "float | null"
+        ldos_method: "string | null"
+    outputs:
+      spec: "spec_handle"
+    implementation_hint:
+      module: "simulation/profiles.py"
+      symbols:
+        - "merge_spec"
+
+  - name: "set_boundary_conditions"
+    description: "Apply boundary-condition updates in a planning-safe way without exposing low-level FSC lifecycle flags directly."
+    inputs:
+      spec: "spec_handle"
+      updates:
+        gate:
+          potential: "float | null"
+        dielectric:
+          dielectric_constant: "float | null"
+        backgate:
+          potential: "float | null"
+      reinitialize: "bool = true"
+    outputs:
+      spec: "spec_handle"
+      bc_summary: "dict"
+    implementation_hint:
+      note: "Agent-facing wrapper should map updates onto spec fields first, then onto FSC.update_BC(...) at execution time."
+      underlying_engine:
+        module: "EQuantum/Equantum/fsc.py"
+        symbol: "FSC.update_BC"
+
+  - name: "validate_spec"
+    description: "Check that required fields are present and that the requested configuration is compatible with the selected profile."
+    inputs:
+      spec: "spec_handle"
+    outputs:
+      ok: "bool"
+      missing_fields: "list[string]"
+      warnings: "list[string]"
+    implementation_hint:
+      module: "simulation/profiles.py"
+      symbols:
+        - "get_missing_fields"
+        - "ensure_compatible"
+
+  - name: "generate_setup"
+    description: "Resolve or build the setup/config for a spec without running the full solve."
+    inputs:
+      spec: "spec_handle"
+      require_config: "bool = true"
+    outputs:
+      setup_dir: "string"
+      config_file: "string"
+      resolved_profile: "dict"
+    implementation_hint:
+      module: "simulation/setup.py"
+      symbols:
+        - "resolve_setup"
+
+  - name: "run_task"
+    description: "Execute the requested task from a fully validated spec."
+    inputs:
+      spec: "spec_handle"
+      require_manual_check: "bool = false"
+      snapshot_mode: "string = step"
+      snapshot_every: "int = 1"
+    outputs:
+      run: "run_handle"
+    implementation_hint:
+      module: "simulation/runner.py"
+      symbols:
+        - "run_spec"
+
+  - name: "run_ldos"
+    description: "Convenience wrapper that forces task=ldos and executes the run."
+    inputs:
+      spec: "spec_handle"
+      require_manual_check: "bool = false"
+    outputs:
+      run: "run_handle"
+    implementation_hint:
+      note: "Thin wrapper over run_task after update_spec(task=ldos)."
+
+  - name: "run_dos"
+    description: "Convenience wrapper that forces task=dos and executes the run."
+    inputs:
+      spec: "spec_handle"
+      require_manual_check: "bool = false"
+    outputs:
+      run: "run_handle"
+    implementation_hint:
+      note: "Thin wrapper over run_task after update_spec(task=dos)."
+
+  - name: "read_run_summary"
+    description: "Load saved run summary and artifact references for a completed run."
+    inputs:
+      run: "run_handle"
+    outputs:
+      result: "dict"
+      artifacts: "dict"
+    implementation_hint:
+      module: "simulation/artifacts.py"
+      symbols:
+        - "save_run_summary"
+      note: "Read-path helper can be added beside existing artifact writers."
+
+  - name: "extract_ldos_cut"
+    description: "Return viewer-ready LDOS cut data for a completed run."
+    inputs:
+      run: "run_handle"
+      snapshot: "string"
+      p0: "list[float]"
+      p1: "list[float]"
+      cut_width: "float = 0.05"
+      overlay_snapshots: "list[string] = []"
+    outputs:
+      ldos_cut: "dict"
+    implementation_hint:
+      module: "simulation/viewer_data.py"
+      symbols:
+        - "ldos_cut_data"
+
+  - name: "compare_ldos_runs"
+    description: "Compare two LDOS runs and summarize differences in a structured way."
+    inputs:
+      run_a: "run_handle"
+      run_b: "run_handle"
+      snapshot_a: "string | null"
+      snapshot_b: "string | null"
+      compare_mode: "string = center_site"
+    outputs:
+      comparison: "comparison_handle"
+      summary: "dict"
+    implementation_hint:
+      note: "New helper to add. Start with metadata diff plus aligned LDOS array comparison."
+
+example_workflows:
+  compare_ldos_across_B:
+    user_request: "Calculate the local density of states of a square lattice under B=1 T and backgate voltage 0.2, then compare it to B=2 T."
+    steps:
+      - "create_spec(task=ldos, lattice_type=square, backgate_voltage=0.2, magnetic_field_T=1.0)"
+      - "validate_spec"
+      - "run_ldos -> run_a"
+      - "clone_spec(spec_a) -> spec_b"
+      - "update_spec(spec_b, {magnetic_field_T: 2.0})"
+      - "validate_spec"
+      - "run_ldos -> run_b"
+      - "compare_ldos_runs(run_a, run_b)"
+
+next_implementation_targets:
+  - "Add a read-path helper for saved run summaries/artifacts."
+  - "Add a first-pass compare_ldos_runs helper over saved LDOS arrays."
+  - "Wrap boundary-condition mutation at the spec level before exposing any direct FSC object mutation."
+  - "Expose the tool contract through the existing FastAPI layer before deciding whether a standalone MCP server is necessary."
