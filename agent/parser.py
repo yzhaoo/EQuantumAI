@@ -100,6 +100,7 @@ def clarification_question_for_field(field_name):
         "device_shape": "Which device shape should I use, for example dotgate or squaregate_center?",
         "backgate_voltage": "What backgate voltage should I use, in volts?",
         "magnetic_field_T": "What magnetic field should I use, in Tesla?",
+        "solve_self_consistent": "Do you want the full self-consistent FSC calculation? Reply yes or no.",
         "spacing0": "What spacing0 should I use for the sampling density function?",
         "density_k": "What k value should I use for the sampling density function?",
     }
@@ -626,6 +627,15 @@ def parse_reply_for_field(field_name, text):
                 rf"\buse\s*({NUM_PATTERN})\s*for\s*(?:magnetic\s+field|field|b)\b",
             ],
         )
+    if field_name == "solve_self_consistent":
+        if is_affirmative_reply(text):
+            return True
+        if is_negative_reply(text) or re.search(
+            r"\b(no scf|skip self[- ]consistent|without self[- ]consisten(?:t|cy))\b",
+            lowered,
+        ):
+            return False
+        return None
     if field_name == "spacing0":
         return parse_numeric_reply(
             text,
@@ -785,6 +795,7 @@ def build_final_confirmation_message(spec):
         f"device_shape={format_default_value(spec.get('device_shape'))}, "
         f"backgate_voltage={format_default_value(spec.get('backgate_voltage'))}, "
         f"magnetic_field_T={format_default_value(spec.get('magnetic_field_T'))}, "
+        f"solve_self_consistent={format_default_value(spec.get('solve_self_consistent'))}, "
         f"spacing0={format_default_value(spec.get('spacing0'))}, "
         f"k={format_default_value(spec.get('density_k'))}, "
         f"dielectric_constant={format_default_value(spec.get('dielectric_constant'))}, "

@@ -6,6 +6,7 @@ design_notes:
   - "Expose task-level tools to the agent instead of raw object lifecycle details."
   - "Keep simulator primitives such as FSC.update_BC(...) behind safer wrappers."
   - "Prefer immutable spec/run handles so the agent can branch experiments safely."
+  - "Treat solve_self_consistent as an explicit planning decision, not an implicit default."
 
 entities:
   spec_handle:
@@ -35,6 +36,7 @@ tools:
       device_shape: "string | null"
       backgate_voltage: "float | null"
       magnetic_field_T: "float | null"
+      solve_self_consistent: "bool | null"
     outputs:
       spec: "spec_handle"
     implementation_hint:
@@ -60,6 +62,7 @@ tools:
         device_shape: "string | null"
         backgate_voltage: "float | null"
         magnetic_field_T: "float | null"
+        solve_self_consistent: "bool | null"
         spacing0: "float | null"
         density_k: "float | null"
         dielectric_constant: "float | null"
@@ -137,6 +140,7 @@ tools:
       module: "simulation/runner.py"
       symbols:
         - "run_spec"
+      note: "When solve_self_consistent=false, do not call fsc.solve(...); use the initialized Ui and LDOS as the final state and persist only run_static.npz as the simulation artifact."
 
   - name: "run_ldos"
     description: "Convenience wrapper that forces task=ldos and executes the run."
@@ -199,7 +203,7 @@ tools:
       comparison: "comparison_handle"
       summary: "dict"
     implementation_hint:
-      note: "New helper to add. Start with metadata diff plus aligned LDOS array comparison."
+      note: "Implemented first as a saved-artifact comparison over ldos_data.npz plus run summary metadata."
 
 example_workflows:
   compare_ldos_across_B:
@@ -213,6 +217,19 @@ example_workflows:
       - "validate_spec"
       - "run_ldos -> run_b"
       - "compare_ldos_runs(run_a, run_b)"
+  compare_before_and_after_self_consistency:
+    user_request: "Compare the LDOS for a square lattice system under B=1 T and backgate voltage 0.2 V with and without self-consistency calculation."
+    steps:
+      - "create_spec(task=ldos, lattice_type=square, backgate_voltage=0.2, magnetic_field_T=1.0)"
+      - "clone_spec -> base_spec"
+      - "update_spec(base_spec, {solve_self_consistent: false})"
+      - "validate_spec"
+      - "run_ldos -> run_before_scf"
+      - "clone_spec(base_spec) -> spec_after_scf"
+      - "update_spec(spec_after_scf, {solve_self_consistent: true})"
+      - "validate_spec"
+      - "run_ldos -> run_after_scf"
+      - "compare_ldos_runs(run_before_scf, run_after_scf)"
 
 next_implementation_targets:
   - "Add a read-path helper for saved run summaries/artifacts."

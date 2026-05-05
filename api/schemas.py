@@ -27,6 +27,29 @@ class AgentTurnRequest(BaseModel):
     tol_ildos: float = 1e-2
 
 
+class PlannerTurnRequest(BaseModel):
+    message: str
+    session_state: dict[str, Any] | None = None
+    parser: str = "openai"
+    openai_model: str = "gpt-4o-mini"
+    strict_openai: bool = False
+    profile: str = "dotgate_center"
+    device_shape: str = "dotgate"
+    output_dir: str | None = None
+    no_scf: bool = False
+    ldos_method: str = "ED"
+    ncore: int = 1
+    moments: int = 256
+    n_random: int = 10
+    eta: float = 0.00015
+    eps: float = 0.05
+    kernel: str = "jackson"
+    energy_points: int = 1024
+    tol_poisson: float = 1e-3
+    tol_ildos: float = 1e-2
+    max_iterations: int = 12
+
+
 class AgentTurnResponse(BaseModel):
     status: str
     message: str
@@ -61,6 +84,71 @@ class CreateRunRequest(BaseModel):
 class CreateRunResponse(BaseModel):
     run_id: str
     status: str
+
+
+class PlannerExecuteRequest(BaseModel):
+    approved_plan: list[dict[str, Any]] = Field(default_factory=list)
+    original_request: str = ""
+    parser: str = "openai"
+    openai_model: str = "gpt-4o-mini"
+    strict_openai: bool = False
+    profile: str = "dotgate_center"
+    device_shape: str = "dotgate"
+    output_dir: str | None = None
+    no_scf: bool = False
+    ldos_method: str = "ED"
+    ncore: int = 1
+    moments: int = 256
+    n_random: int = 10
+    eta: float = 0.00015
+    eps: float = 0.05
+    kernel: str = "jackson"
+    energy_points: int = 1024
+    tol_poisson: float = 1e-3
+    tol_ildos: float = 1e-2
+
+
+class ToolDefinitionItem(BaseModel):
+    name: str
+    description: str
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolDefinitionsResponse(BaseModel):
+    contract_path: str
+    contract_available: bool
+    contract_text: str | None = None
+    tools: list[ToolDefinitionItem] = Field(default_factory=list)
+    llm_tools: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ToolCallRequest(BaseModel):
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    parser: str = "openai"
+    openai_model: str = "gpt-4o-mini"
+    strict_openai: bool = False
+    profile: str = "dotgate_center"
+    device_shape: str = "dotgate"
+    output_dir: str | None = None
+    no_scf: bool = False
+    ldos_method: str = "ED"
+    ncore: int = 1
+    moments: int = 256
+    n_random: int = 10
+    eta: float = 0.00015
+    eps: float = 0.05
+    kernel: str = "jackson"
+    energy_points: int = 1024
+    tol_poisson: float = 1e-3
+    tol_ildos: float = 1e-2
+
+
+class ToolCallResponse(BaseModel):
+    tool_name: str
+    ok: bool
+    result: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class ManualCheckRequest(BaseModel):
@@ -171,7 +259,7 @@ class ViewerLdosCutResponse(BaseModel):
 
 
 class EventItem(BaseModel):
-    type: Literal["status", "log", "manual_check", "result", "error"]
+    type: Literal["status", "log", "manual_check", "result", "error", "fsc_iteration"]
     message: str | None = None
     payload: dict[str, Any] | None = None
     timestamp: str
@@ -180,6 +268,7 @@ class EventItem(BaseModel):
 class HistoryRunItem(BaseModel):
     run_path: str
     run_name: str
+    artifact_dir: str
     profile: str | None = None
     task: str | None = None
     status: str

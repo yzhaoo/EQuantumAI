@@ -389,6 +389,7 @@ class FSC:
         save_ildos=True,
         qprime_stable_by="set",      # "len" or "set"
         force_switch_after=5,
+        iteration_callback=None,
         **kwarg
     ):
         """
@@ -482,6 +483,23 @@ class FSC:
             print(f"Solver streak: {last_solver}, {same_solver_count}")
             if hasattr(self, "print_iteration_summary"):
                 self.print_iteration_summary(it)
+
+            if iteration_callback is not None:
+                def get_log_val(key):
+                    vals = self.log.get(key)
+                    return float(vals[-1]) if vals and len(vals) > 0 else None
+                iteration_callback({
+                    "iteration": it,
+                    "qprime_size": len(self.Qprime),
+                    "max_dn": get_log_val("ni_maxdiff"),
+                    "dn_per_site": get_log_val("ni_l2diff"),
+                    "dn_per_site_pct": get_log_val("ni_reldiff"),
+                    "max_dildos": get_log_val("ildos_maxdiff"),
+                    "dildos_per_site": get_log_val("ildos_l2diff"),
+                    "dildos_per_site_pct": get_log_val("ildos_meanreldiff"),
+                    "time_poisson": get_log_val("timing_poisson"),
+                    "time_quantum": get_log_val("timing_quantum"),
+                })
 
             # ----------------------------
             # Iteration-level snapshot
@@ -996,7 +1014,14 @@ class FSC:
 
         np.savez(
             os.path.join(folder, "run_static.npz"),
-            static_data=np.array([static_data], dtype=object)
+            static_data=np.array([static_data], dtype=object),
+            Ui=np.asarray(self.Ui, dtype=float),
+            ni=np.asarray(self.ni, dtype=float),
+            Qprime=np.asarray(self.Qprime, dtype=int),
+            Ci=np.asarray(self.Ci if self.Ci is not None else [], dtype=float),
+            ildos=np.asarray(self.ildos if self.ildos is not None else [], dtype=float),
+            runtime_params=np.array([self.collect_runtime_params()], dtype=object),
+            scf_log=np.array([self.log], dtype=object),
         )
 
     def collect_runtime_params(self):

@@ -22,11 +22,23 @@ from api.runtime import (
 
 
 class RunRecord:
-    def __init__(self, spec: dict[str, Any], config: AgentRuntimeConfig, require_manual_check: bool):
+    def __init__(
+        self,
+        spec: dict[str, Any],
+        config: AgentRuntimeConfig,
+        require_manual_check: bool,
+        *,
+        mode: str = "simulation",
+        approved_plan: list[dict[str, Any]] | None = None,
+        original_request: str = "",
+    ):
         self.id = str(uuid.uuid4())
         self.spec = dict(spec)
         self.config = config
         self.require_manual_check = require_manual_check
+        self.mode = mode
+        self.approved_plan = list(approved_plan or [])
+        self.original_request = original_request
         self.run_dir = ensure_run_dir(self.id)
         self.process: subprocess.Popen[str] | None = None
         self.status = "queued"
@@ -43,9 +55,12 @@ class RunRecord:
 
     def _write_request_file(self) -> None:
         payload = {
+            "mode": self.mode,
             "spec": self.spec,
             "config": self.config.to_namespace().__dict__,
             "require_manual_check": self.require_manual_check,
+            "approved_plan": self.approved_plan,
+            "original_request": self.original_request,
         }
         from api.runtime import atomic_write_json
 
@@ -153,6 +168,26 @@ class RunManager:
 
     def create_run(self, spec: dict[str, Any], config: AgentRuntimeConfig, require_manual_check: bool) -> RunRecord:
         record = RunRecord(spec=spec, config=config, require_manual_check=require_manual_check)
+        with self._lock:
+            self._runs[record.id] = record
+        record.launch()
+        return record
+
+    def create_planner_run(
+        self,
+        approved_plan: list[dict[str, Any]],
+        config: AgentRuntimeConfig,
+        *,
+        original_request: str = "",
+    ) -> RunRecord:
+        record = RunRecord(
+            spec={},
+            config=config,
+            require_manual_check=False,
+            mode="planner",
+            approved_plan=approved_plan,
+            original_request=original_request,
+        )
         with self._lock:
             self._runs[record.id] = record
         record.launch()

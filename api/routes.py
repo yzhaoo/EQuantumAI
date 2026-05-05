@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
+import traceback
+import urllib.error
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
 from agent import parser
 from agent.schemas import AgentRuntimeConfig
+from api.planner import run_planner_turn
 from api.schemas import (
     AbortRunResponse,
     AgentTurnRequest,
@@ -14,7 +18,12 @@ from api.schemas import (
     CreateRunResponse,
     HistoryRunItem,
     ManualCheckRequest,
+    PlannerExecuteRequest,
+    PlannerTurnRequest,
     RunStateResponse,
+    ToolCallRequest,
+    ToolCallResponse,
+    ToolDefinitionsResponse,
     ViewerLdosCutRequest,
     ViewerLdosCutResponse,
     ViewerQuantumHeatmapResponse,
@@ -27,9 +36,29 @@ from api.schemas import (
 )
 from api.runtime import PROJECT_ROOT, list_history_run_dirs, load_json, resolve_artifact_dir, resolve_history_run_dir
 from api.state import RUN_MANAGER
+from api.tools import execute_tool_call, list_tool_definitions
 from simulation import viewer_data
 
 router = APIRouter()
+
+
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = exc.read().decode("utf-8")
+    except Exception:
+        body = ""
+    if not body:
+        return str(exc)
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return body
+    error = parsed.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message.strip():
+            return message
+    return body
 
 
 def _config_from_payload(payload) -> AgentRuntimeConfig:
@@ -90,6 +119,7 @@ def _history_item(run_dir: Path) -> dict:
     return {
         "run_path": run_dir.relative_to(PROJECT_ROOT).as_posix(),
         "run_name": run_dir.name,
+        "artifact_dir": str(run_dir),
         "profile": spec.get("profile") or result.get("profile"),
         "task": spec.get("task") or result.get("task"),
         "status": "completed" if result else ("saved" if has_static or snapshots else "incomplete"),
@@ -116,6 +146,62 @@ def agent_turn(payload: AgentTurnRequest):
         execute=payload.execute,
     )
     return response.to_dict()
+
+
+@router.post("/agent/plan", response_model=AgentTurnResponse)
+def agent_plan(payload: PlannerTurnRequest):
+    config = _config_from_payload(payload)
+    try:
+        return run_planner_turn(
+            payload.message,
+            config,
+            session_state=payload.session_state,
+            max_iterations=payload.max_iterations,
+        )
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        if isinstance(exc, urllib.error.HTTPError):
+            raise HTTPException(status_code=502, detail=_http_error_detail(exc)) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@router.post("/planner/runs", response_model=CreateRunResponse)
+def create_planner_run(payload: PlannerExecuteRequest):
+    config = _config_from_payload(payload)
+    record = RUN_MANAGER.create_planner_run(
+        approved_plan=payload.approved_plan,
+        config=config,
+        original_request=payload.original_request,
+    )
+    return {"run_id": record.id, "status": record.status}
+
+
+@router.get("/tools", response_model=ToolDefinitionsResponse)
+def get_tools():
+    return list_tool_definitions()
+
+
+@router.post("/tools/call", response_model=ToolCallResponse)
+def call_tool(payload: ToolCallRequest):
+    config = _config_from_payload(payload)
+    try:
+        result = execute_tool_call(payload.tool_name, payload.arguments, config=config)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "tool_name": payload.tool_name,
+        "ok": True,
+        "result": result,
+        "error": None,
+    }
 
 
 @router.post("/runs", response_model=CreateRunResponse)

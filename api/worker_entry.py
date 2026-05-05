@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agent.schemas import AgentRuntimeConfig
 from api.runtime import (
+    append_event,
     append_log,
     load_json,
     manual_check_path,
@@ -24,6 +25,7 @@ from api.runtime import (
     set_result,
     set_status,
 )
+from api.planner_runner import execute_planner_plan
 from simulation.runner import RunAbortedError, run_spec
 
 
@@ -59,26 +61,52 @@ def wait_for_manual_check(run_dir: Path, payload: dict) -> bool:
         time.sleep(0.5)
 
 
+def should_abort_check(run_dir: Path) -> bool:
+    try:
+        state = load_json(run_dir / "state.json", default={})
+        return state.get("status") == "aborted"
+    except Exception:
+        return False
+
+
 def main() -> int:
     args = parse_args()
     run_dir = Path(args.run_dir)
     request = load_json(request_path(run_dir), default={})
+    mode = str(request.get("mode", "simulation"))
     spec = dict(request.get("spec", {}))
     config = AgentRuntimeConfig(**dict(request.get("config", {})))
     require_manual_check = bool(request.get("require_manual_check", False))
+    approved_plan = list(request.get("approved_plan", []))
+    original_request = str(request.get("original_request", ""))
 
     set_pid(run_dir, os.getpid())
 
     try:
-        result = run_spec(
-            spec,
-            config=config,
-            status=lambda status: set_status(run_dir, status),
-            log=lambda line: append_log(run_dir, line),
-            manual_check=lambda payload: wait_for_manual_check(run_dir, payload),
-            metadata=lambda payload: set_metadata(run_dir, **payload),
-            require_manual_check=require_manual_check,
-        )
+        if mode == "planner":
+            result = execute_planner_plan(
+                approved_plan,
+                config=config,
+                original_request=original_request,
+                status=lambda status: set_status(run_dir, status),
+                log=lambda line: append_log(run_dir, line),
+                metadata=lambda payload: set_metadata(run_dir, **payload),
+                event=lambda t, p: append_event(run_dir, event_type=t, payload=p),
+                manual_check=lambda payload: wait_for_manual_check(run_dir, payload),
+                should_abort=lambda: should_abort_check(run_dir),
+            )
+        else:
+            result = run_spec(
+                spec,
+                config=config,
+                status=lambda status: set_status(run_dir, status),
+                log=lambda line: append_log(run_dir, line),
+                manual_check=lambda payload: wait_for_manual_check(run_dir, payload),
+                metadata=lambda payload: set_metadata(run_dir, **payload),
+                event=lambda t, p: append_event(run_dir, event_type=t, payload=p),
+                require_manual_check=require_manual_check,
+                should_abort=lambda: should_abort_check(run_dir),
+            )
         set_result(run_dir, result)
         return 0
     except RunAbortedError as exc:

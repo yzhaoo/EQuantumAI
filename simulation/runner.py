@@ -23,6 +23,7 @@ LogCallback = Callable[[str], None]
 ManualCheckCallback = Callable[[dict[str, Any]], bool]
 AbortCheckCallback = Callable[[], bool]
 MetadataCallback = Callable[[dict[str, Any]], None]
+EventCallback = Callable[[str, dict[str, Any] | None], None]
 
 
 class RunAbortedError(RuntimeError):
@@ -64,6 +65,7 @@ def run_spec(
     manual_check: ManualCheckCallback | None = None,
     should_abort: AbortCheckCallback | None = None,
     metadata: MetadataCallback | None = None,
+    event: EventCallback | None = None,
     require_manual_check: bool = False,
     snapshot_mode: str = "step",
     snapshot_every: int = 1,
@@ -73,6 +75,7 @@ def run_spec(
     log_cb = log or _noop_log
     manual_cb = manual_check or _default_manual_check
     metadata_cb = metadata or _noop_metadata
+    event_cb = event or (lambda _t, _p: None)
     args = runtime_config.to_namespace()
     _raise_if_aborted(should_abort)
 
@@ -133,23 +136,32 @@ def run_spec(
         if not manual_cb(manual_check_payload):
             raise RunAbortedError("Simulation aborted after manual boundary check rejection.")
 
-    status_cb("solving")
-    _raise_if_aborted(should_abort)
-    log_cb(f"Starting FSC solve with snapshot_mode={snapshot_mode!r}.")
-    fsc.solve(
-        syst,
-        save=True,
-        snapshot_mode=snapshot_mode,
-        snapshot_every=snapshot_every,
-        snapshot_folder=artifact_dir,
-        ldos_method=spec["ldos_method"],
-        save_ildos=True,
-        eta=spec["eta"],
-        M=runtime_config.moments,
-        eps=runtime_config.eps,
-        kernel=runtime_config.kernel,
-    )
-    log_cb("FSC solve finished.")
+    if spec["solve_self_consistent"]:
+        status_cb("solving")
+        _raise_if_aborted(should_abort)
+        log_cb(f"Starting FSC solve with snapshot_mode={snapshot_mode!r}.")
+        fsc.solve(
+            syst,
+            save=True,
+            snapshot_mode=snapshot_mode,
+            snapshot_every=snapshot_every,
+            snapshot_folder=artifact_dir,
+            ldos_method=spec["ldos_method"],
+            save_ildos=True,
+            eta=spec["eta"],
+            M=runtime_config.moments,
+            eps=runtime_config.eps,
+            kernel=runtime_config.kernel,
+            iteration_callback=lambda stats: (
+                _raise_if_aborted(should_abort) or event_cb("fsc_iteration", stats)
+            ),
+        )
+        log_cb("FSC solve finished.")
+    else:
+        status_cb("initial_state_ready")
+        _raise_if_aborted(should_abort)
+        log_cb("Skipping FSC solve because solve_self_consistent=false; using the initialized Ui and LDOS as final.")
+        fsc.save_static_reference(artifact_dir)
 
     status_cb("exporting_artifacts")
     _raise_if_aborted(should_abort)
@@ -157,6 +169,7 @@ def run_spec(
     result = artifacts.summarize_run(fsc, spec, phi, artifact_dir)
     result["setup_dir"] = setup_dir
     result["config_file"] = config_file
+    result["static_reference"] = os.path.join(artifact_dir, "run_static.npz")
 
     if spec["task"] == "dos":
         energy, rho = fsc.qsystem.get_dos(
@@ -166,11 +179,28 @@ def run_spec(
             eps=runtime_config.eps,
             kernel=runtime_config.kernel,
         )
-        result["artifacts"] = artifacts.save_dos_artifacts(artifact_dir, energy, rho)
+        result["dos_preview"] = {
+            "energy": energy.tolist(),
+            "dos": np.asarray(rho, dtype=float).tolist(),
+        }
+        if spec["solve_self_consistent"]:
+            result["artifacts"] = artifacts.save_dos_artifacts(artifact_dir, energy, rho)
+        else:
+            result["artifacts"] = {"static_reference": result["static_reference"]}
     else:
-        site_id, artifact_paths = artifacts.save_ldos_artifacts(artifact_dir, fsc, site_mode="center")
+        site_id, energy, rho = artifacts.extract_center_ldos(fsc, site_mode="center")
         result["ldos_site_id"] = site_id
-        result["artifacts"] = artifact_paths
+        result["ldos_energy_points"] = int(len(energy))
+        result["ldos_energy_range"] = [float(energy[0]), float(energy[-1])] if len(energy) else []
+        result["ldos_preview"] = {
+            "site_id": site_id,
+            "energy": energy.tolist(),
+            "ldos": rho.tolist(),
+        }
+        if spec["solve_self_consistent"]:
+            result["artifacts"] = artifacts.save_ldos_artifacts(artifact_dir, fsc, site_mode="center")[1]
+        else:
+            result["artifacts"] = {"static_reference": result["static_reference"]}
 
     if manual_check_payload is not None:
         result["manual_check"] = manual_check_payload
@@ -186,6 +216,7 @@ def run_agent_response(
     status: StatusCallback | None = None,
     log: LogCallback | None = None,
     manual_check: ManualCheckCallback | None = None,
+    event: EventCallback | None = None,
     require_manual_check: bool = False,
 ) -> AgentResponse:
     if response.status != "running":
@@ -197,6 +228,7 @@ def run_agent_response(
         status=status,
         log=log,
         manual_check=manual_check,
+        event=event,
         require_manual_check=require_manual_check,
     )
     completed_session = dict(response.session_state)

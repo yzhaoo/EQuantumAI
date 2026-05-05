@@ -87,6 +87,10 @@ function isLiveStatus(status: string | null) {
   return status !== null && !["completed", "failed", "aborted"].includes(status);
 }
 
+function isPendingArtifactError(message: string) {
+  return message.includes("Run artifact directory is not available yet") || message.includes("Missing run_static.npz");
+}
+
 function boundsFromHeatmap(data: ViewerQuantumHeatmapResponse | null) {
   if (!data) {
     return null;
@@ -382,7 +386,12 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
         if (cancelled) {
           return;
         }
-        setError(err instanceof Error ? err.message : "Failed to load snapshots.");
+        const message = err instanceof Error ? err.message : "Failed to load snapshots.";
+        if (isPendingArtifactError(message)) {
+          setError(null);
+          return;
+        }
+        setError(message);
       } finally {
         if (!cancelled) {
           setIsLoadingSnapshots(false);
@@ -436,7 +445,12 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
         }
         setHeatmap(null);
         setSelectedSiteId(null);
-        setError(err instanceof Error ? err.message : "Failed to load heatmap.");
+        const message = err instanceof Error ? err.message : "Failed to load heatmap.";
+        if (isPendingArtifactError(message)) {
+          setError(null);
+          return;
+        }
+        setError(message);
       })
       .finally(() => {
         if (!cancelled) {
@@ -476,7 +490,12 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
           return;
         }
         setSiteLdos(null);
-        setError(err instanceof Error ? err.message : "Failed to load site LDOS.");
+        const message = err instanceof Error ? err.message : "Failed to load site LDOS.";
+        if (isPendingArtifactError(message)) {
+          setError(null);
+          return;
+        }
+        setError(message);
       })
       .finally(() => {
         if (!cancelled) {
@@ -533,7 +552,12 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
           return;
         }
         setSurfaceCut(null);
-        setError(err instanceof Error ? err.message : "Failed to load surface cut.");
+        const message = err instanceof Error ? err.message : "Failed to load surface cut.";
+        if (isPendingArtifactError(message)) {
+          setError(null);
+          return;
+        }
+        setError(message);
       })
       .finally(() => {
         if (!cancelled) {
@@ -570,7 +594,12 @@ export function SnapshotViewer({ source }: SnapshotViewerProps) {
           return;
         }
         setLdosCut(null);
-        setError(err instanceof Error ? err.message : "Failed to load LDOS cut.");
+        const message = err instanceof Error ? err.message : "Failed to load LDOS cut.";
+        if (isPendingArtifactError(message)) {
+          setError(null);
+          return;
+        }
+        setError(message);
       })
       .finally(() => {
         if (!cancelled) {

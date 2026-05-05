@@ -21,8 +21,8 @@ DEVICE_SHAPE_DATA_DIRS = {
 }
 
 REQUIRED_FIELDS_BY_TASK = {
-    "dos": ["lattice_type", "backgate_voltage", "magnetic_field_T"],
-    "ldos": ["lattice_type", "backgate_voltage", "magnetic_field_T"],
+    "dos": ["backgate_voltage", "magnetic_field_T", "solve_self_consistent"],
+    "ldos": ["backgate_voltage", "magnetic_field_T", "solve_self_consistent"],
 }
 
 OPTIONAL_RUNTIME_FIELDS = [
@@ -161,7 +161,7 @@ def empty_spec(default_profile: str = "dotgate_center") -> dict[str, Any]:
         "device_shape": None,
         "backgate_voltage": None,
         "magnetic_field_T": None,
-        "solve_self_consistent": True,
+        "solve_self_consistent": None,
         "spacing0": None,
         "density_k": None,
         "dielectric_constant": None,
@@ -176,14 +176,18 @@ def empty_spec(default_profile: str = "dotgate_center") -> dict[str, Any]:
 def normalize_spec(spec: dict[str, Any] | None, default_profile: str = "dotgate_center") -> dict[str, Any]:
     normalized = empty_spec(default_profile=default_profile)
     if spec is None:
-        return normalized
+        spec = {}
     for key in SPEC_FIELDS:
         if key in spec:
             normalized[key] = spec[key]
     if normalized["profile"] is None:
         normalized["profile"] = default_profile
-    if normalized["solve_self_consistent"] is None:
-        normalized["solve_self_consistent"] = True
+    profile_defaults = PROFILES.get(normalized["profile"])
+    if profile_defaults is not None:
+        if normalized["lattice_type"] is None:
+            normalized["lattice_type"] = profile_defaults.get("lattice_type")
+        if normalized["device_shape"] is None:
+            normalized["device_shape"] = profile_defaults.get("device_shape")
     return normalized
 
 

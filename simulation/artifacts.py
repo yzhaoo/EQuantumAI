@@ -16,6 +16,19 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+def extract_center_ldos(fsc, site_mode: str = "center") -> tuple[int, np.ndarray, np.ndarray]:
+    coords = np.array([fsc.sites[idx].coordinates[:2] for idx in fsc.Qsites], dtype=float)
+    if site_mode == "center":
+        center_idx = int(np.argmin(np.linalg.norm(coords, axis=1)))
+    else:
+        center_idx = 0
+
+    site_id = int(fsc.Qsites[center_idx])
+    energy = np.asarray(fsc.ildos[center_idx, 0, :], dtype=float)
+    rho = np.asarray(fsc.ildos[center_idx, 1, :], dtype=float)
+    return site_id, energy, rho
+
+
 def make_artifact_dir(profile: dict, base_output_dir: str | None = None) -> str:
     root = base_output_dir or os.path.join(profile["setup_root"], "agent_runs")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -31,11 +44,23 @@ def save_query_spec(artifact_dir: str, spec: dict) -> str:
     return path
 
 
+def load_query_spec(artifact_dir: str) -> dict:
+    path = os.path.join(artifact_dir, "query_spec.json")
+    with open(path) as handle:
+        return json.load(handle)
+
+
 def save_run_summary(artifact_dir: str, result: dict) -> str:
     path = os.path.join(artifact_dir, "run_summary.json")
     with open(path, "w") as handle:
         json.dump(result, handle, indent=2)
     return path
+
+
+def load_run_summary(artifact_dir: str) -> dict:
+    path = os.path.join(artifact_dir, "run_summary.json")
+    with open(path) as handle:
+        return json.load(handle)
 
 
 def summarize_run(fsc, spec: dict, phi: float, artifact_dir: str) -> dict:
@@ -44,6 +69,8 @@ def summarize_run(fsc, spec: dict, phi: float, artifact_dir: str) -> dict:
         "task": spec["task"],
         "profile": spec["profile"],
         "lattice_type": spec["lattice_type"],
+        "solve_self_consistent": spec.get("solve_self_consistent"),
+        "scf_executed": bool(spec.get("solve_self_consistent")),
         "device_shape": spec.get("device_shape"),
         "backgate_voltage_V": spec["backgate_voltage"],
         "magnetic_field_T": spec["magnetic_field_T"],
@@ -85,15 +112,7 @@ def save_dos_artifacts(artifact_dir: str, energy, rho) -> dict[str, str]:
 
 
 def save_ldos_artifacts(artifact_dir: str, fsc, site_mode: str = "center") -> tuple[int, dict[str, str]]:
-    coords = np.array([fsc.sites[idx].coordinates[:2] for idx in fsc.Qsites], dtype=float)
-    if site_mode == "center":
-        center_idx = int(np.argmin(np.linalg.norm(coords, axis=1)))
-    else:
-        center_idx = 0
-
-    site_id = int(fsc.Qsites[center_idx])
-    energy = np.asarray(fsc.ildos[center_idx, 0, :], dtype=float)
-    rho = np.asarray(fsc.ildos[center_idx, 1, :], dtype=float)
+    site_id, energy, rho = extract_center_ldos(fsc, site_mode=site_mode)
 
     np.savez(
         os.path.join(artifact_dir, "ldos_data.npz"),

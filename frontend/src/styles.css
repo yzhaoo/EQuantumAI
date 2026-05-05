@@ -466,7 +466,9 @@ button {
 .history-stage,
 .history-grid,
 .history-card,
-.history-scroll {
+.history-scroll,
+.conversation-stage,
+.conversation-scroll {
   min-height: 0;
 }
 
@@ -497,6 +499,18 @@ button {
   gap: 10px;
 }
 
+.conversation-stage {
+  flex: 1;
+  display: flex;
+}
+
+.conversation-scroll {
+  flex: 1;
+  overflow: auto;
+  display: grid;
+  gap: 12px;
+}
+
 .history-entry {
   border-radius: 14px;
   padding: 12px 14px;
@@ -516,6 +530,33 @@ button {
 
 .history-entry.user {
   background: rgba(65, 125, 89, 0.08);
+}
+
+.conversation-entry {
+  display: grid;
+  gap: 10px;
+}
+
+.conversation-entry-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.conversation-entry-header strong {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.conversation-entry-body {
+  margin: 0;
+  font-family: "SFMono-Regular", "Menlo", monospace;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .history-entry span {

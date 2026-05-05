@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  type AgentMode,
+  type PlannerModel,
   abortRun,
   approveManualCheck,
+  createPlannerRun,
   createRun,
   fetchHistoryRuns,
   fetchRun,
   sendAgentTurn,
+  sendPlannerTurn,
   type AgentTurnResponse,
   type HistoryRunItem,
   type RunStateResponse,
@@ -14,10 +18,10 @@ import {
 import { ChatPanel, type ChatMessage } from "./components/ChatPanel";
 import { SetupGeometryViewer } from "./components/viewer/SetupGeometryViewer";
 import { SnapshotViewer } from "./components/viewer/SnapshotViewer";
+import { ConvergenceChart } from "./components/viewer/ConvergenceChart";
 
-type WorkspaceView = "setup" | "simulation" | "history";
-type InspectorTab = "simulation-info" | "prompt-log" | "terminal";
-type ParserMode = "openai" | "langchain" | "regex";
+type WorkspaceView = "setup" | "simulation" | "history" | "conversation";
+type InspectorTab = "simulation-info" | "terminal";
 
 function buildMessage(role: ChatMessage["role"], text: string, response?: AgentTurnResponse): ChatMessage {
   return {
@@ -36,6 +40,40 @@ function formatValue(value: unknown) {
     return value.join(", ");
   }
   return String(value);
+}
+
+function extractPlannerArtifactDirs(response: AgentTurnResponse | null): string[] {
+  const toolTrace =
+    (response?.result?.tool_trace as Array<Record<string, unknown>> | undefined) ??
+    (response?.session_state?.tool_trace as Array<Record<string, unknown>> | undefined) ??
+    [];
+  const artifactDirs: string[] = [];
+  for (const step of toolTrace) {
+    const result = (step.result as Record<string, unknown> | undefined) ?? {};
+    const run = (result.run as Record<string, unknown> | undefined) ?? {};
+    const resultPayload = (result.result as Record<string, unknown> | undefined) ?? {};
+    const candidates = [run.artifact_dir, resultPayload.artifact_dir];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.length > 0) {
+        artifactDirs.push(candidate);
+      }
+    }
+  }
+  return artifactDirs;
+}
+
+function matchHistoryRunByArtifactDir(historyRuns: HistoryRunItem[], artifactDir: string | null): HistoryRunItem | null {
+  if (!artifactDir) {
+    return null;
+  }
+  return (
+    historyRuns.find((run) => run.artifact_dir === artifactDir) ??
+    historyRuns.find((run) => {
+      const result = run.result as Record<string, unknown> | null;
+      return result?.artifact_dir === artifactDir;
+    }) ??
+    null
+  );
 }
 
 function SetupStage({
@@ -66,7 +104,11 @@ function SimulationStage({
   const canInspect =
     source.kind === "history"
       ? true
-      : source.runId && ["building_system", "initializing_fsc", "manual_check_required", "solving", "exporting_artifacts", "completed"].includes(currentStatus ?? "");
+      : Boolean(
+          source.runId &&
+            currentStatus &&
+            !["queued", "failed", "aborted"].includes(currentStatus),
+        );
 
   if (!canInspect) {
     return (
@@ -142,10 +184,48 @@ function HistoryStage({
   );
 }
 
+function ConversationStage({
+  messages,
+}: {
+  messages: ChatMessage[];
+}) {
+  return (
+    <section className="stage-card history-stage">
+      <div className="stage-header">
+        <h2>Conversation Log</h2>
+      </div>
+      <div className="conversation-stage">
+        {messages.length === 0 ? (
+          <div className="viewer-empty">The raw conversation between you and the agent will appear here.</div>
+        ) : (
+          <div className="conversation-scroll">
+            {messages.map((message, index) => (
+              <article key={message.id} className={`history-entry conversation-entry ${message.role}`}>
+                <div className="conversation-entry-header">
+                  <span>{message.role === "user" ? "User" : "Assistant"}</span>
+                  <strong>Turn {index + 1}</strong>
+                </div>
+                <pre className="conversation-entry-body">{message.text}</pre>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
+  const plannerModels: Array<{ id: PlannerModel; label: string }> = [
+    { id: "gpt-4o-mini", label: "GPT-4o Mini" },
+    { id: "gpt-4.1", label: "GPT-4.1" },
+    { id: "gpt-5", label: "GPT-5" },
+  ];
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
-  const [sessionState, setSessionState] = useState<Record<string, unknown> | null>(null);
+  const [parserSessionState, setParserSessionState] = useState<Record<string, unknown> | null>(null);
+  const [plannerSessionState, setPlannerSessionState] = useState<Record<string, unknown> | null>(null);
   const [currentSpec, setCurrentSpec] = useState<SimulationSpec | null>(null);
   const [lastAgentResponse, setLastAgentResponse] = useState<AgentTurnResponse | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
@@ -155,10 +235,12 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("setup");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("simulation-info");
-  const [parserMode, setParserMode] = useState<ParserMode>("openai");
+  const [agentMode, setAgentMode] = useState<AgentMode>("parser");
+  const [plannerModel, setPlannerModel] = useState<PlannerModel>("gpt-4o-mini");
   const [historyRuns, setHistoryRuns] = useState<HistoryRunItem[]>([]);
   const [selectedHistoryRunPath, setSelectedHistoryRunPath] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
+  const lastRunNoticeKey = useRef<string | null>(null);
 
   const launchable = lastAgentResponse?.status === "running" && currentSpec !== null;
   const selectedHistoryRun = historyRuns.find((run) => run.run_path === selectedHistoryRunPath) ?? null;
@@ -171,6 +253,12 @@ export default function App() {
     [selectedHistoryRun, runId, runState?.status],
   );
   const visualizationStatus = selectedHistoryRun?.status ?? runState?.status ?? null;
+  const plannerToolTrace =
+    agentMode === "planner"
+      ? (((lastAgentResponse?.result?.tool_trace as Array<Record<string, unknown>> | undefined) ??
+          (lastAgentResponse?.session_state?.tool_trace as Array<Record<string, unknown>> | undefined) ??
+          []) as Array<Record<string, unknown>>)
+      : [];
 
   useEffect(() => {
     fetchHistoryRuns()
@@ -214,6 +302,40 @@ export default function App() {
     };
   }, [runId]);
 
+  useEffect(() => {
+    if (!runId || !runState?.status) {
+      return;
+    }
+    const status = runState.status;
+    if (!["failed", "aborted", "completed"].includes(status)) {
+      return;
+    }
+
+    const noticeKey = `${runId}:${status}:${runState.error ?? ""}`;
+    if (lastRunNoticeKey.current === noticeKey) {
+      return;
+    }
+    lastRunNoticeKey.current = noticeKey;
+
+    if (status === "failed") {
+      const failureMessage = runState.error?.trim()
+        ? `Run failed: ${runState.error}`
+        : "Run failed. Check the terminal panel for details.";
+      setMessages((prev) => [...prev, buildMessage("assistant", failureMessage)]);
+      return;
+    }
+
+    if (status === "aborted") {
+      const abortedMessage = runState.error?.trim()
+        ? `Run aborted: ${runState.error}`
+        : "Run aborted.";
+      setMessages((prev) => [...prev, buildMessage("assistant", abortedMessage)]);
+      return;
+    }
+
+    setMessages((prev) => [...prev, buildMessage("assistant", "Run completed.")]);
+  }, [runId, runState?.status, runState?.error]);
+
   async function handleSubmit() {
     const text = draft.trim();
     if (!text) {
@@ -226,13 +348,26 @@ export default function App() {
     setDraft("");
 
     try {
-      const response = await sendAgentTurn({
-        message: text,
-        session_state: sessionState,
-        execute: false,
-        parser: parserMode,
-      });
-      setSessionState(response.session_state);
+      const response =
+        agentMode === "planner"
+          ? await sendPlannerTurn({
+              message: text,
+              session_state: plannerSessionState,
+              parser: "openai",
+              openai_model: plannerModel,
+              max_iterations: 12,
+            })
+          : await sendAgentTurn({
+              message: text,
+              session_state: parserSessionState,
+              execute: false,
+              parser: "openai",
+            });
+      if (agentMode === "planner") {
+        setPlannerSessionState(response.session_state);
+      } else {
+        setParserSessionState(response.session_state);
+      }
       setCurrentSpec(response.spec);
       setLastAgentResponse(response);
       setMessages((prev) => [...prev, buildMessage("assistant", response.message, response)]);
@@ -246,26 +381,46 @@ export default function App() {
   }
 
   async function handleStartRun() {
-    if (!currentSpec) {
-      return;
-    }
-
     setErrorMessage(null);
     setIsLaunching(true);
     setWorkspaceView("simulation");
 
     try {
-      const response = await createRun({
-        spec: currentSpec,
-        parser: parserMode,
-      });
-      setRunId(response.run_id);
-      setRunState(null);
-      setSelectedHistoryRunPath(null);
-      setMessages((prev) => [
-        ...prev,
-        buildMessage("assistant", `Run queued with id ${response.run_id}. I’ll keep updating the console while it runs.`),
-      ]);
+      if (agentMode === "planner") {
+        const approvedPlan = (plannerSessionState?.approved_plan as Array<Record<string, unknown>> | undefined) ?? [];
+        const originalRequest = (plannerSessionState?.original_request as string | undefined) ?? "";
+        if (approvedPlan.length === 0) {
+          throw new Error("No approved planner workflow is ready to run.");
+        }
+        const response = await createPlannerRun({
+          approved_plan: approvedPlan,
+          original_request: originalRequest,
+          parser: "openai",
+          openai_model: plannerModel,
+        });
+        setRunId(response.run_id);
+        setRunState(null);
+        setSelectedHistoryRunPath(null);
+        setMessages((prev) => [
+          ...prev,
+          buildMessage("assistant", `Planner run queued with id ${response.run_id}. I’ll keep updating the console while it runs.`),
+        ]);
+      } else {
+        if (!currentSpec) {
+          return;
+        }
+        const response = await createRun({
+          spec: currentSpec,
+          parser: "openai",
+        });
+        setRunId(response.run_id);
+        setRunState(null);
+        setSelectedHistoryRunPath(null);
+        setMessages((prev) => [
+          ...prev,
+          buildMessage("assistant", `Run queued with id ${response.run_id}. I’ll keep updating the console while it runs.`),
+        ]);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to launch run.";
       setErrorMessage(message);
@@ -310,25 +465,51 @@ export default function App() {
     }
   }
 
-  const parserTabs = [
-    { id: "openai" as const, label: "AI-agent" },
-    { id: "langchain" as const, label: "LLM" },
-    { id: "regex" as const, label: "Regex" },
+  const agentTabs = [
+    { id: "parser" as const, label: "LLM Parser" },
+    { id: "planner" as const, label: "Task Planner" },
   ];
 
   const workspaceTabs = [
     { id: "setup" as const, label: "Setup" },
     { id: "simulation" as const, label: "Simulation" },
     { id: "history" as const, label: "History" },
+    { id: "conversation" as const, label: "Conversation Log" },
   ];
 
   const inspectorTabs = [
     { id: "simulation-info" as const, label: "Simulation Info" },
-    { id: "prompt-log" as const, label: "Prompt Log" },
     { id: "terminal" as const, label: "Terminal" },
   ];
 
-  const artifactEntries = Object.entries((runState?.result?.artifacts as Record<string, string> | undefined) ?? {});
+  const displayedResult =
+    (selectedHistoryRun?.result as Record<string, unknown> | null) ??
+    (runState?.result as Record<string, unknown> | null) ??
+    null;
+  const artifactEntries = Object.entries((displayedResult?.artifacts as Record<string, string> | undefined) ?? {});
+
+  useEffect(() => {
+    if (agentMode !== "planner") {
+      return;
+    }
+    if (!runState || runState.status !== "completed") {
+      return;
+    }
+    void fetchHistoryRuns()
+      .then((refreshedHistory) => {
+        setHistoryRuns(refreshedHistory);
+        const result = runState.result as Record<string, unknown> | null;
+        const latestArtifactDir = typeof result?.artifact_dir === "string" ? result.artifact_dir : null;
+        const matchedRun = matchHistoryRunByArtifactDir(refreshedHistory, latestArtifactDir);
+        if (matchedRun) {
+          setSelectedHistoryRunPath(matchedRun.run_path);
+          setWorkspaceView("simulation");
+        }
+      })
+      .catch(() => {
+        return;
+      });
+  }, [agentMode, runState]);
 
   return (
     <div className="app-shell">
@@ -357,23 +538,39 @@ export default function App() {
               setSelectedHistoryRunPath(runPath);
               setWorkspaceView("setup");
             }} /> : null}
+            {workspaceView === "conversation" ? <ConversationStage messages={messages} /> : null}
           </div>
         </div>
 
         <aside className="workbench-rail">
           <section className="rail-card rail-chat">
-            <nav className="segmented-control segmented-control-rail" aria-label="Parser modes">
-              {parserTabs.map((tab) => (
+            <nav className="segmented-control segmented-control-rail" aria-label="Agent modes">
+              {agentTabs.map((tab) => (
                 <button
                   key={tab.id}
-                  className={parserMode === tab.id ? "active" : ""}
-                  onClick={() => setParserMode(tab.id)}
+                  className={agentMode === tab.id ? "active" : ""}
+                  onClick={() => setAgentMode(tab.id)}
                   type="button"
                 >
                   {tab.label}
                 </button>
               ))}
             </nav>
+
+            {agentMode === "planner" ? (
+              <nav className="segmented-control segmented-control-rail" aria-label="Planner models">
+                {plannerModels.map((model) => (
+                  <button
+                    key={model.id}
+                    className={plannerModel === model.id ? "active" : ""}
+                    onClick={() => setPlannerModel(model.id)}
+                    type="button"
+                  >
+                    {model.label}
+                  </button>
+                ))}
+              </nav>
+            ) : null}
 
             <ChatPanel
               messages={messages}
@@ -383,6 +580,7 @@ export default function App() {
               launchable={launchable}
               runId={runId}
               runStatus={runState?.status ?? null}
+              agentMode={agentMode}
               onDraftChange={setDraft}
               onSubmit={handleSubmit}
               onStartRun={handleStartRun}
@@ -416,11 +614,11 @@ export default function App() {
                     </div>
                     <div className="metric-card">
                       <span>Run</span>
-                      <strong>{runState?.status ?? (runId ? "queued" : "not started")}</strong>
+                      <strong>{selectedHistoryRun?.status ?? runState?.status ?? (runId ? "queued" : "not started")}</strong>
                     </div>
                     <div className="metric-card">
-                      <span>Parser</span>
-                      <strong>{parserMode}</strong>
+                      <span>Mode</span>
+                      <strong>{agentMode === "planner" ? `planner:${plannerModel}` : "parser:openai"}</strong>
                     </div>
                     <div className="metric-card">
                       <span>Run ID</span>
@@ -453,6 +651,7 @@ export default function App() {
                   </div>
 
                   {errorMessage ? <div className="viewer-error">{errorMessage}</div> : null}
+                  {runState?.error ? <div className="viewer-error">{runState.error}</div> : null}
 
                   {runState?.manual_check_pending ? (
                     <div className="inspector-panel">
@@ -474,6 +673,7 @@ export default function App() {
                       <div><dt>Device</dt><dd>{formatValue(currentSpec?.device_shape)}</dd></div>
                       <div><dt>Backgate</dt><dd>{currentSpec?.backgate_voltage !== null ? `${currentSpec?.backgate_voltage} V` : "-"}</dd></div>
                       <div><dt>Magnetic field</dt><dd>{currentSpec?.magnetic_field_T !== null ? `${currentSpec?.magnetic_field_T} T` : "-"}</dd></div>
+                      <div><dt>Self-consistent</dt><dd>{formatValue(currentSpec?.solve_self_consistent)}</dd></div>
                     </dl>
                   </div>
 
@@ -492,31 +692,45 @@ export default function App() {
                       </ul>
                     )}
                   </div>
-                </div>
-              ) : null}
 
-              {inspectorTab === "prompt-log" ? (
-                <div className="inspector-stack">
-                  {messages.length === 0 ? <div className="viewer-empty">Conversation history will appear here.</div> : messages.map((message) => (
-                    <article key={message.id} className={`history-entry ${message.role}`}>
-                      <span>{message.role === "user" ? "You" : "Assistant"}</span>
-                      <p>{message.text}</p>
-                    </article>
-                  ))}
+                  {agentMode === "planner" ? (
+                    <div className="inspector-panel">
+                      <h3>Planner Trace</h3>
+                      {plannerToolTrace.length === 0 ? (
+                        <p>No planner tool calls recorded yet.</p>
+                      ) : (
+                        <ol className="artifact-list">
+                          {plannerToolTrace.map((entry, index) => (
+                            <li key={`planner-trace-${index}`}>
+                              <strong>{String(entry.tool_name ?? `step_${index + 1}`)}</strong>
+                              <span>{JSON.stringify(entry.arguments ?? {})}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      )}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
               {inspectorTab === "terminal" ? (
-                <div className="terminal-panel">
-                  {(runState?.logs ?? []).length > 0 ? (
-                    runState?.logs.map((line, index) => (
-                      <div className="terminal-line" key={`${index}-${line.slice(0, 16)}`}>
-                        {line}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="viewer-empty">Run output will stream here after the background job starts.</div>
-                  )}
+                <div style={{ display: "flex", flexDirection: "row", height: "100%", gap: "1rem" }}>
+                  <div className="terminal-panel" style={{ flex: 1, overflowY: "auto" }}>
+                    {(runState?.logs ?? []).length > 0 ? (
+                      runState?.logs.map((line, index) => (
+                        <div className="terminal-line" key={`${index}-${line.slice(0, 16)}`}>
+                          {line}
+                        </div>
+                      ))
+                    ) : runState?.error ? (
+                      <div className="viewer-error">{runState.error}</div>
+                    ) : (
+                      <div className="viewer-empty">Run output will stream here after the background job starts.</div>
+                    )}
+                  </div>
+                  <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+                    <ConvergenceChart events={runState?.events ?? []} />
+                  </div>
                 </div>
               ) : null}
             </div>

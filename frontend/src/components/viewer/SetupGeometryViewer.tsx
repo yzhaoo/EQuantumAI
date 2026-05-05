@@ -55,7 +55,7 @@ function isInspectable(runStatus: string | null) {
 }
 
 function isPendingStaticError(message: string) {
-  return message.includes("Missing run_static.npz");
+  return message.includes("Missing run_static.npz") || message.includes("Run artifact directory is not available yet");
 }
 
 function colorForMaterial(material: string) {

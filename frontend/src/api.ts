@@ -1,4 +1,6 @@
 export type AgentStatus = "needs_clarification" | "running" | "completed";
+export type AgentMode = "parser" | "planner";
+export type PlannerModel = "gpt-4o-mini" | "gpt-4.1" | "gpt-5";
 
 export type SimulationSpec = {
   raw_query?: string;
@@ -8,7 +10,7 @@ export type SimulationSpec = {
   device_shape: string | null;
   backgate_voltage: number | null;
   magnetic_field_T: number | null;
-  solve_self_consistent: boolean;
+  solve_self_consistent: boolean | null;
   spacing0: number | null;
   density_k: number | null;
   dielectric_constant: number | null;
@@ -33,13 +35,25 @@ export type AgentTurnRequest = {
   session_state?: Record<string, unknown> | null;
   execute?: boolean;
   parser?: string;
+  openai_model?: string;
   profile?: string;
   device_shape?: string;
+};
+
+export type PlannerTurnRequest = {
+  message: string;
+  session_state?: Record<string, unknown> | null;
+  parser?: string;
+  openai_model?: string;
+  profile?: string;
+  device_shape?: string;
+  max_iterations?: number;
 };
 
 export type CreateRunRequest = {
   spec: SimulationSpec;
   parser?: string;
+  openai_model?: string;
   profile?: string;
   device_shape?: string;
   require_manual_check?: boolean;
@@ -50,10 +64,32 @@ export type CreateRunResponse = {
   status: string;
 };
 
+export type PlannerExecuteRequest = {
+  approved_plan: Array<Record<string, unknown>>;
+  original_request: string;
+  parser?: string;
+  openai_model?: string;
+  profile?: string;
+  device_shape?: string;
+};
+
+export type FscIterationPayload = {
+  iteration: number;
+  qprime_size: number;
+  max_dn: number | null;
+  dn_per_site: number | null;
+  dn_per_site_pct: number | null;
+  max_dildos: number | null;
+  dildos_per_site: number | null;
+  dildos_per_site_pct: number | null;
+  time_poisson: number | null;
+  time_quantum: number | null;
+};
+
 export type RunEvent = {
-  type: "status" | "log" | "manual_check" | "result" | "error";
+  type: "status" | "log" | "manual_check" | "result" | "error" | "fsc_iteration";
   message?: string | null;
-  payload?: Record<string, unknown> | null;
+  payload?: Record<string, unknown> | FscIterationPayload | null;
   timestamp: string;
 };
 
@@ -73,6 +109,7 @@ export type RunStateResponse = {
 export type HistoryRunItem = {
   run_path: string;
   run_name: string;
+  artifact_dir: string;
   profile: string | null;
   task: string | null;
   status: string;
@@ -194,7 +231,17 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed with ${response.status}`);
+    if (text) {
+      try {
+        const parsed = JSON.parse(text) as { detail?: unknown };
+        if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+          throw new Error(parsed.detail);
+        }
+      } catch {
+        throw new Error(text);
+      }
+    }
+    throw new Error(`Request failed with ${response.status}`);
   }
 
   return (await response.json()) as T;
@@ -207,8 +254,22 @@ export function sendAgentTurn(payload: AgentTurnRequest): Promise<AgentTurnRespo
   });
 }
 
+export function sendPlannerTurn(payload: PlannerTurnRequest): Promise<AgentTurnResponse> {
+  return requestJson<AgentTurnResponse>("/agent/plan", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export function createRun(payload: CreateRunRequest): Promise<CreateRunResponse> {
   return requestJson<CreateRunResponse>("/runs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function createPlannerRun(payload: PlannerExecuteRequest): Promise<CreateRunResponse> {
+  return requestJson<CreateRunResponse>("/planner/runs", {
     method: "POST",
     body: JSON.stringify(payload),
   });
