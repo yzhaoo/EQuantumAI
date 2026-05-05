@@ -11,6 +11,7 @@ import {
   type ViewerSetupFieldResponse,
   type ViewerSetupGeometryResponse,
 } from "../../api";
+import { SnapshotTimeline } from "./SnapshotTimeline";
 
 type SetupGeometryViewerProps = {
   source: {
@@ -28,12 +29,12 @@ const SETUP_PROPERTY_OPTIONS: SetupPropertyMode[] = ["material", "Ui", "ni", "Ci
 type CameraPreset = "iso" | "x" | "y" | "z";
 
 const MATERIAL_COLORS: Record<string, string> = {
-  gate: "#c8d80e",
-  back_gate: "#c8d80e",
-  top_gate: "#c8d80e",
+  gate: "#eed605",
+  backgate: "#eed605",
+  top_gate: "#eed605",
   dielectric: "#87d5d8",
-  Qsystem: "#2c5e54",
-  vacuum: "#ffffff",
+  Qsystem: "#d64b1d",
+  vacuum: "#ecfafb",
   dopants: "#c897ce",
   unknown: "#b5becb",
 };
@@ -45,6 +46,9 @@ const VIRIDIS_STOPS = [
   { t: 0.75, color: "#5ec962" },
   { t: 1, color: "#fde725" },
 ];
+const viridisGradient = `linear-gradient(0deg, ${VIRIDIS_STOPS
+  .map((stop) => `${stop.color} ${stop.t * 100}%`)
+  .join(", ")})`;
 
 function isInspectable(runStatus: string | null) {
   return runStatus !== null && !["queued", "failed", "aborted"].includes(runStatus);
@@ -133,6 +137,7 @@ export function SetupGeometryViewer({ source }: SetupGeometryViewerProps) {
   const [selectedSnapshot, setSelectedSnapshot] = useState("");
   const [propertyMode, setPropertyMode] = useState<SetupPropertyMode>("material");
   const [fieldData, setFieldData] = useState<ViewerSetupFieldResponse | null>(null);
+  const [visibleMaterials, setVisibleMaterials] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingField, setIsLoadingField] = useState(false);
@@ -285,6 +290,17 @@ export function SetupGeometryViewer({ source }: SetupGeometryViewerProps) {
   const siteCount = geometry?.site_ids.length ?? 0;
 
   useEffect(() => {
+    if (legend.length === 0) {
+      setVisibleMaterials([]);
+      return;
+    }
+    setVisibleMaterials((current) => {
+      const next = current.filter((material) => legend.includes(material));
+      return next.length > 0 ? next : legend;
+    });
+  }, [legend]);
+
+  useEffect(() => {
     const container = mountRef.current;
     if (!container || !geometry) {
       return;
@@ -333,6 +349,9 @@ export function SetupGeometryViewer({ source }: SetupGeometryViewerProps) {
     if (propertyMode === "material" || !fieldData) {
       const grouped = new Map<string, Array<[number, number, number]>>();
       validPoints.forEach(({ point, material }) => {
+        if (visibleMaterials.length > 0 && !visibleMaterials.includes(material)) {
+          return;
+        }
         const bucket = grouped.get(material) ?? [];
         bucket.push(point);
         grouped.set(material, bucket);
@@ -356,14 +375,17 @@ export function SetupGeometryViewer({ source }: SetupGeometryViewerProps) {
           alphaMap: pointSpriteTexture,
           transparent: true,
           alphaTest: 0.2,
-          opacity: material === "vacuum" ? 0.015 : material === "dielectric" ? 0.12 : material === "dopants" ? 0.48 : 0.72,
+          opacity: material === "vacuum" ? 0.8 : material === "dielectric" ? 0.82 : material === "dopants" ? 0.48 : 0.72,
         });
         root.add(new THREE.Points(pointGeometry, pointMaterial));
       });
     } else {
-      const positions = new Float32Array(validPoints.length * 3);
-      const colors = new Float32Array(validPoints.length * 3);
-      validPoints.forEach(({ point, siteId }, index) => {
+      const filteredPoints = validPoints.filter(
+        ({ material }) => visibleMaterials.length === 0 || visibleMaterials.includes(material),
+      );
+      const positions = new Float32Array(filteredPoints.length * 3);
+      const colors = new Float32Array(filteredPoints.length * 3);
+      filteredPoints.forEach(({ point, siteId }, index) => {
         positions[index * 3] = point[0];
         positions[index * 3 + 1] = point[1];
         positions[index * 3 + 2] = point[2];
@@ -520,7 +542,17 @@ export function SetupGeometryViewer({ source }: SetupGeometryViewerProps) {
       });
       pointSpriteTexture?.dispose();
     };
-  }, [fieldData, geometry, propertyMode]);
+  }, [fieldData, geometry, propertyMode, visibleMaterials]);
+
+  function toggleMaterial(material: string) {
+    setVisibleMaterials((current) =>
+      current.includes(material) ? current.filter((item) => item !== material) : [...current, material],
+    );
+  }
+
+  function showAllMaterials() {
+    setVisibleMaterials(legend);
+  }
 
   if ((source.kind === "live" && !source.runId) || (source.kind === "history" && !source.runPath)) {
     return (
@@ -576,41 +608,54 @@ export function SetupGeometryViewer({ source }: SetupGeometryViewerProps) {
             ))}
           </select>
         </label>
-        <label>
-          Snapshot
-          <select
-            value={selectedSnapshot}
-            onChange={(event) => setSelectedSnapshot(event.target.value)}
-            disabled={snapshots.length === 0 || propertyMode === "material"}
+      </div>
+
+      {snapshots.length > 0 ? (
+        <div className="timeline-overlay">
+          <SnapshotTimeline
+            snapshots={snapshots}
+            activeSnapshot={selectedSnapshot}
+            onSelect={setSelectedSnapshot}
+          />
+        </div>
+      ) : propertyMode !== "material" ? (
+        <div className="timeline-overlay setup-timeline-empty">Waiting for snapshots…</div>
+      ) : null}
+
+      <div className="setup-material-window">
+        <div className="setup-material-filter">
+          <button
+            type="button"
+            className={`setup-material-pill ${visibleMaterials.length === legend.length ? "active" : ""}`}
+            onClick={showAllMaterials}
           >
-            {snapshots.length === 0 ? <option value="">Waiting for snapshots</option> : null}
-            {snapshots.map((snapshot) => (
-              <option key={snapshot} value={snapshot}>
-                {snapshot.replace(".npz", "")}
-              </option>
-            ))}
-          </select>
-        </label>
+            all
+          </button>
+          {legend.map((material) => (
+            <button
+              key={material}
+              type="button"
+              className={`setup-material-pill ${visibleMaterials.includes(material) ? "active" : ""}`}
+              onClick={() => toggleMaterial(material)}
+            >
+              <span className="legend-swatch" style={{ background: colorForMaterial(material) }} />
+              {material}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="setup-legend">
-        {propertyMode === "material" || !fieldData ? (
-          legend.map((material) => (
-            <div key={material}>
-              <span className="legend-swatch" style={{ background: colorForMaterial(material) }} />
-              {material}
-            </div>
-          ))
-        ) : (
+        {propertyMode !== "material" && fieldData ? (
           <>
             <div className="setup-legend-range">
-              <span>{fieldData.color_min.toPrecision(4)}</span>
-              <div className="setup-legend-bar" />
-              <span>{fieldData.color_max.toPrecision(4)}</span>
+              <span className="setup-legend-max">{fieldData.color_max.toPrecision(4)}</span>
+              <div className="setup-legend-bar" style={{ background: viridisGradient }} />
+              <span className="setup-legend-min">{fieldData.color_min.toPrecision(4)}</span>
             </div>
-            <div className="setup-legend-caption">{fieldData.property} on all sites</div>
+            <div className="setup-legend-caption">{fieldData.property}</div>
           </>
-        )}
+        ) : null}
       </div>
 
       <div className="setup-footnote">

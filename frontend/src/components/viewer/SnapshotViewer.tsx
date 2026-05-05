@@ -144,11 +144,20 @@ const FloatingPanel = memo(function FloatingPanel({
         height: `${layout.h * 100}%`,
         zIndex: layout.z,
       }}
-      onPointerDown={(e) => {
+      onPointerDown={() => {
         onFocus();
-        onDragStart(e);
       }}
     >
+      <button
+        className="floating-panel-dragzone"
+        type="button"
+        aria-label={`Move ${title}`}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          onFocus();
+          onDragStart(event as unknown as ReactPointerEvent<HTMLDivElement>);
+        }}
+      />
       <div className="floating-panel-body">{children}</div>
       <button 
         className="floating-panel-resize" 

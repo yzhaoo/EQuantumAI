@@ -39,42 +39,16 @@ function formatValue(value: unknown) {
 }
 
 function SetupStage({
-  spec,
   source,
-  currentStatus,
 }: {
-  spec: SimulationSpec | null;
   source:
     | { kind: "live"; runId: string | null; runStatus: string | null }
     | { kind: "history"; runPath: string };
-  currentStatus: string | null;
 }) {
-  const metrics = [
-    { label: "Profile", value: spec?.profile ?? "dotgate_center" },
-    { label: "Task", value: spec?.task ?? "dos" },
-    { label: "Lattice", value: spec?.lattice_type ?? "square" },
-    { label: "Magnetic field", value: spec?.magnetic_field_T !== null ? `${spec?.magnetic_field_T} T` : "-" },
-    { label: "Backgate", value: spec?.backgate_voltage !== null ? `${spec?.backgate_voltage} V` : "-" },
-    { label: "Run state", value: currentStatus ?? "idle" },
-  ];
-
   return (
     <section className="stage-card">
-      <div className="stage-header">
-        <h2>System Sites</h2>
-      </div>
-
       <div className="setup-scene">
         <SetupGeometryViewer source={source} />
-      </div>
-
-      <div className="stage-metric-grid">
-        {metrics.map((metric) => (
-          <div key={metric.label} className="metric-card">
-            <span>{metric.label}</span>
-            <strong>{metric.value}</strong>
-          </div>
-        ))}
       </div>
     </section>
   );
@@ -377,7 +351,7 @@ export default function App() {
           </header>
 
           <div className="main-stage">
-            {workspaceView === "setup" ? <SetupStage spec={displayedSpec} source={visualizationSource} currentStatus={visualizationStatus} /> : null}
+            {workspaceView === "setup" ? <SetupStage source={visualizationSource} /> : null}
             {workspaceView === "simulation" ? <SimulationStage source={visualizationSource} currentStatus={visualizationStatus} /> : null}
             {workspaceView === "history" ? <HistoryStage historyRuns={historyRuns} selectedRunPath={selectedHistoryRunPath} onSelectRun={(runPath) => {
               setSelectedHistoryRunPath(runPath);
@@ -451,6 +425,30 @@ export default function App() {
                     <div className="metric-card">
                       <span>Run ID</span>
                       <strong>{runId ?? "-"}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>Profile</span>
+                      <strong>{displayedSpec?.profile ?? "dotgate_center"}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>Task</span>
+                      <strong>{displayedSpec?.task ?? "dos"}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>Lattice</span>
+                      <strong>{displayedSpec?.lattice_type ?? "square"}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>Magnetic field</span>
+                      <strong>{displayedSpec?.magnetic_field_T !== null ? `${displayedSpec?.magnetic_field_T} T` : "-"}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>Backgate</span>
+                      <strong>{displayedSpec?.backgate_voltage !== null ? `${displayedSpec?.backgate_voltage} V` : "-"}</strong>
+                    </div>
+                    <div className="metric-card">
+                      <span>Run state</span>
+                      <strong>{visualizationStatus ?? "idle"}</strong>
                     </div>
                   </div>
 
