@@ -26,13 +26,27 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "profile": {"type": "string", "default": "dotgate_center"},
-                "task": {"type": ["string", "null"]},
-                "lattice_type": {"type": ["string", "null"]},
-                "device_shape": {"type": ["string", "null"]},
+                "task": {"type": ["string", "null"], "enum": ["dos", "ldos", None]},
+                "lattice_type": {"type": ["string", "null"], "enum": ["square", "honeycomb", None]},
+                "device_shape": {"type": ["string", "null"], "enum": ["dotgate", "squaregate_center", None]},
                 "backgate_voltage": {"type": ["number", "null"]},
                 "magnetic_field_T": {"type": ["number", "null"]},
                 "solve_self_consistent": {"type": ["boolean", "null"]},
+                "spacing0": {"type": ["number", "null"]},
+                "density_k": {"type": ["number", "null"]},
+                "dielectric_constant": {"type": ["number", "null"]},
+                "gate_potential": {"type": ["number", "null"]},
+                "convergence_tol": {
+                    "type": ["array", "null"],
+                    "items": {"type": "number"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+                "Ncore": {"type": ["integer", "null"]},
+                "eta": {"type": ["number", "null"]},
+                "ldos_method": {"type": ["string", "null"], "enum": ["ED", "TF", "kpm", "kmeanssample", None]},
                 "raw_query": {"type": ["string", "null"]},
+                "spec": {"type": ["object", "null"]},
             },
         },
     },
@@ -209,6 +223,47 @@ def _normalize_spec_payload(spec: dict[str, Any] | None, profile_name: str = "do
     return profiles.normalize_spec(spec, default_profile=profile_name)
 
 
+def _canonicalize_ldos_method(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    lowered = value.strip().lower()
+    if lowered == "kpm":
+        return "kpm"
+    if lowered in {"kmeans", "kmeanssample"}:
+        return "kmeanssample"
+    if lowered == "tf":
+        return "TF"
+    if lowered == "ed":
+        return "ED"
+    return value
+
+
+def _normalize_planner_spec_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(arguments or {})
+
+    nested_spec = normalized.pop("spec", None)
+    if isinstance(nested_spec, dict):
+        merged = dict(nested_spec)
+        merged.update(normalized)
+        normalized = merged
+
+    if "method" in normalized and "ldos_method" not in normalized:
+        normalized["ldos_method"] = normalized.pop("method")
+    if "no_scf" in normalized and "solve_self_consistent" not in normalized:
+        normalized["solve_self_consistent"] = not bool(normalized.pop("no_scf"))
+
+    if "tol_poisson" in normalized or "tol_ildos" in normalized:
+        tol_poisson = normalized.pop("tol_poisson", None)
+        tol_ildos = normalized.pop("tol_ildos", None)
+        if tol_poisson is not None and tol_ildos is not None and "convergence_tol" not in normalized:
+            normalized["convergence_tol"] = [tol_poisson, tol_ildos]
+
+    if "ldos_method" in normalized:
+        normalized["ldos_method"] = _canonicalize_ldos_method(normalized["ldos_method"])
+
+    return normalized
+
+
 def _resolve_spec(spec: dict[str, Any], config: AgentRuntimeConfig) -> tuple[dict[str, Any], dict[str, Any]]:
     return profiles.resolve_runtime_spec(spec, args=config.to_namespace())
 
@@ -233,9 +288,10 @@ def _handle_list_profiles(_: dict[str, Any], config: AgentRuntimeConfig, **kwarg
 
 
 def _handle_create_spec(arguments: dict[str, Any], config: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
-    profile_name = str(arguments.get("profile") or config.profile or "dotgate_center")
+    normalized_arguments = _normalize_planner_spec_arguments(arguments)
+    profile_name = str(normalized_arguments.get("profile") or config.profile or "dotgate_center")
     spec = profiles.empty_spec(default_profile=profile_name)
-    updates = {key: value for key, value in arguments.items() if key in profiles.SPEC_FIELDS}
+    updates = {key: value for key, value in normalized_arguments.items() if key in profiles.SPEC_FIELDS}
     spec = profiles.merge_spec(spec, updates)
     return {"spec": spec}
 
@@ -247,7 +303,7 @@ def _handle_clone_spec(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwarg
 
 def _handle_update_spec(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
     spec = _normalize_spec_payload(arguments.get("spec"))
-    updates = dict(arguments.get("updates") or {})
+    updates = _normalize_planner_spec_arguments(dict(arguments.get("updates") or {}))
     updated = profiles.merge_spec(spec, updates)
     return {"spec": updated}
 
@@ -301,7 +357,8 @@ def _extract_ldos_from_static_reference(artifact_dir: Path) -> dict[str, Any]:
 
 
 def _handle_validate_spec(arguments: dict[str, Any], config: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
-    spec = _normalize_spec_payload(arguments.get("spec"))
+    normalized_arguments = _normalize_planner_spec_arguments(arguments)
+    spec = _normalize_spec_payload(normalized_arguments if "spec" not in arguments else arguments.get("spec") or normalized_arguments)
     warnings: list[str] = []
     missing_fields = profiles.get_missing_fields(spec)
     if missing_fields:
@@ -335,7 +392,8 @@ def _handle_validate_spec(arguments: dict[str, Any], config: AgentRuntimeConfig,
 
 
 def _handle_generate_setup(arguments: dict[str, Any], config: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
-    spec = _normalize_spec_payload(arguments.get("spec"))
+    normalized_arguments = _normalize_planner_spec_arguments(arguments)
+    spec = _normalize_spec_payload(normalized_arguments if "spec" not in arguments else arguments.get("spec") or normalized_arguments)
     require_config = bool(arguments.get("require_config", True))
     resolved_spec, profile = _resolve_spec(spec, config)
     setup_dir, config_file = setup.resolve_setup(profile, resolved_spec, require_config=require_config)
@@ -352,7 +410,8 @@ def _handle_generate_setup(arguments: dict[str, Any], config: AgentRuntimeConfig
 
 
 def _handle_run_task(arguments: dict[str, Any], config: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
-    spec = _normalize_spec_payload(arguments.get("spec"))
+    normalized_arguments = _normalize_planner_spec_arguments(arguments)
+    spec = _normalize_spec_payload(normalized_arguments if "spec" not in arguments else arguments.get("spec") or normalized_arguments)
     missing_fields = profiles.get_missing_fields(spec)
     if missing_fields:
         raise ValueError(
@@ -360,16 +419,21 @@ def _handle_run_task(arguments: dict[str, Any], config: AgentRuntimeConfig, **kw
             + ", ".join(missing_fields)
             + ". Validate or ask the user to clarify them before running."
         )
-    require_manual_check = bool(arguments.get("require_manual_check", False))
-    snapshot_mode = str(arguments.get("snapshot_mode", "step"))
-    snapshot_every = int(arguments.get("snapshot_every", 1))
+    require_manual_check = bool(normalized_arguments.get("require_manual_check", False))
+    snapshot_mode = str(normalized_arguments.get("snapshot_mode", "step"))
+    snapshot_every = int(normalized_arguments.get("snapshot_every", 1))
+    runner_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key in {"status", "log", "manual_check", "should_abort", "metadata", "event"}
+    }
     result = runner.run_spec(
         spec,
         config=config,
         require_manual_check=require_manual_check,
         snapshot_mode=snapshot_mode,
         snapshot_every=snapshot_every,
-        **kwargs
+        **runner_kwargs,
     )
     return {
         "run": {
@@ -387,12 +451,13 @@ def _handle_run_task(arguments: dict[str, Any], config: AgentRuntimeConfig, **kw
 
 
 def _handle_run_ldos(arguments: dict[str, Any], config: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
-    spec = _normalize_spec_payload(arguments.get("spec"))
+    normalized_arguments = _normalize_planner_spec_arguments(arguments)
+    spec = _normalize_spec_payload(normalized_arguments if "spec" not in arguments else arguments.get("spec") or normalized_arguments)
     updated_spec = profiles.merge_spec(spec, {"task": "ldos"})
     return _handle_run_task(
         {
             "spec": updated_spec,
-            "require_manual_check": arguments.get("require_manual_check", False),
+            "require_manual_check": normalized_arguments.get("require_manual_check", False),
         },
         config,
         **kwargs
@@ -400,19 +465,20 @@ def _handle_run_ldos(arguments: dict[str, Any], config: AgentRuntimeConfig, **kw
 
 
 def _handle_run_dos(arguments: dict[str, Any], config: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
-    spec = _normalize_spec_payload(arguments.get("spec"))
+    normalized_arguments = _normalize_planner_spec_arguments(arguments)
+    spec = _normalize_spec_payload(normalized_arguments if "spec" not in arguments else arguments.get("spec") or normalized_arguments)
     updated_spec = profiles.merge_spec(spec, {"task": "dos"})
     return _handle_run_task(
         {
             "spec": updated_spec,
-            "require_manual_check": arguments.get("require_manual_check", False),
+            "require_manual_check": normalized_arguments.get("require_manual_check", False),
         },
         config,
         **kwargs
     )
 
 
-def _handle_read_run_summary(arguments: dict[str, Any], _: AgentRuntimeConfig) -> dict[str, Any]:
+def _handle_read_run_summary(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
     artifact_dir = Path(str(arguments["artifact_dir"])).resolve()
     result = artifacts.load_run_summary(str(artifact_dir))
     spec = artifacts.load_query_spec(str(artifact_dir))
@@ -432,6 +498,31 @@ def _artifact_dir_from_run_like(run_like: dict[str, Any] | None, explicit_artifa
     return Path(str(candidate)).resolve()
 
 
+def _artifact_dirs_from_prior_trace(prior_tool_trace: Any) -> list[Path]:
+    if not isinstance(prior_tool_trace, list):
+        return []
+    artifact_dirs: list[Path] = []
+    for step in prior_tool_trace:
+        if not isinstance(step, dict):
+            continue
+        result = step.get("result")
+        if not isinstance(result, dict):
+            continue
+        run_payload = result.get("run")
+        result_payload = result.get("result")
+        candidates: list[Any] = []
+        if isinstance(run_payload, dict):
+            candidates.append(run_payload.get("artifact_dir"))
+        if isinstance(result_payload, dict):
+            candidates.append(result_payload.get("artifact_dir"))
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate:
+                path = Path(candidate).resolve()
+                if path not in artifact_dirs:
+                    artifact_dirs.append(path)
+    return artifact_dirs
+
+
 def _load_ldos_artifact(artifact_dir: Path) -> dict[str, Any]:
     ldos_path = artifact_dir / "ldos_data.npz"
     if ldos_path.exists():
@@ -448,7 +539,20 @@ def _load_ldos_artifact(artifact_dir: Path) -> dict[str, Any]:
     return _extract_ldos_from_static_reference(artifact_dir)
 
 
-def _handle_compare_ldos_runs(arguments: dict[str, Any], _: AgentRuntimeConfig) -> dict[str, Any]:
+def _handle_compare_ldos_runs(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
+    prior_tool_trace = kwargs.get("prior_tool_trace")
+    if (
+        arguments.get("run_a") is None
+        and arguments.get("run_b") is None
+        and arguments.get("artifact_dir_a") is None
+        and arguments.get("artifact_dir_b") is None
+    ):
+        prior_artifact_dirs = _artifact_dirs_from_prior_trace(prior_tool_trace)
+        if len(prior_artifact_dirs) >= 2:
+            arguments = dict(arguments)
+            arguments["artifact_dir_a"] = str(prior_artifact_dirs[-2])
+            arguments["artifact_dir_b"] = str(prior_artifact_dirs[-1])
+
     artifact_dir_a = _artifact_dir_from_run_like(arguments.get("run_a"), arguments.get("artifact_dir_a"))
     artifact_dir_b = _artifact_dir_from_run_like(arguments.get("run_b"), arguments.get("artifact_dir_b"))
 

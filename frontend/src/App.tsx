@@ -200,13 +200,28 @@ function ConversationStage({
         ) : (
           <div className="conversation-scroll">
             {messages.map((message, index) => (
-              <article key={message.id} className={`history-entry conversation-entry ${message.role}`}>
-                <div className="conversation-entry-header">
-                  <span>{message.role === "user" ? "User" : "Assistant"}</span>
-                  <strong>Turn {index + 1}</strong>
-                </div>
-                <pre className="conversation-entry-body">{message.text}</pre>
-              </article>
+              (() => {
+                const modelRequest = message.response?.result?.model_request;
+                const formattedRequest =
+                  modelRequest && typeof modelRequest === "object"
+                    ? JSON.stringify(modelRequest, null, 2)
+                    : null;
+                return (
+                  <article key={message.id} className={`history-entry conversation-entry ${message.role}`}>
+                    <div className="conversation-entry-header">
+                      <span>{message.role === "user" ? "User" : "Assistant"}</span>
+                      <strong>Turn {index + 1}</strong>
+                    </div>
+                    <pre className="conversation-entry-body">{message.text}</pre>
+                    {message.role === "assistant" && formattedRequest ? (
+                      <section className="conversation-json-panel">
+                        <div className="conversation-json-header">Model Request JSON</div>
+                        <pre className="conversation-json-body">{formattedRequest}</pre>
+                      </section>
+                    ) : null}
+                  </article>
+                );
+              })()
             ))}
           </div>
         )}

@@ -95,6 +95,7 @@ def execute_planner_plan(
             tool_name,
             arguments,
             config=config,
+            prior_tool_trace=tool_trace,
             status=status_cb,
             log=log_cb,
             metadata=metadata_cb,

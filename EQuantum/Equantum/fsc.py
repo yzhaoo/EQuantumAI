@@ -441,6 +441,8 @@ class FSC:
                 "Ncore": self.Ncore,
                 **kwarg,
             }
+            if ldos_method != "ED" and "eta" in quantum_kwargs:
+                quantum_kwargs.pop("eta", None)
             if ldos_method == "kmeanssample":
                 quantum_kwargs["num_sample"] = int(5 * self.Ncore)
             return quantum_kwargs

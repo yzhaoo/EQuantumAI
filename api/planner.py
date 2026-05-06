@@ -145,6 +145,11 @@ def _planner_plan_prompt(tool_names: list[str]) -> str:
         "Return the exact tools to call, in order, with concrete JSON arguments for each one. "
         "For each step, arguments_json must be a valid JSON object encoded as a string, like '{}' or '{\"spec\": {...}}'. "
         "Do not use markdown fences, comments, Python dict syntax, or explanatory text inside arguments_json. "
+        "Only use argument names that actually exist in the provided tool schemas. "
+        "Do not invent helper fields such as spec_ref, label, method, runs, export_plots, boundary_conditions, no_scf, name, or comparison_metrics unless they are explicitly present in a tool schema. "
+        "When the user refers to ED, TF, or KPM-style methods, store that choice in spec.ldos_method. "
+        "Use 'kpm' or 'kmeanssample' only as values of ldos_method, never as a free-standing method field. "
+        "Use create_spec and update_spec to set spec fields, and pass those values inside the spec object when calling validate_spec, generate_setup, run_ldos, run_dos, or run_task. "
         "If the user asks for comparisons, with/without self-consistency, or multiple field values, expand that into multiple runs and a comparison step. "
         "Use the provided conversation history and prior request context to resolve referential follow-ups like 'restart the plan', 'same setup', 'run it again', or 'change B to 2 T'. "
         "If the latest user message is shorthand, reconstruct the intended task from that prior context instead of treating it as a brand-new standalone request. "
@@ -226,7 +231,9 @@ def _interpret_pending_plan_reply(
         },
     }
     payload = _responses_request(api_key=api_key, base_url=base_url, body=body)
-    return json.loads(_extract_output_text(payload))
+    result = json.loads(_extract_output_text(payload))
+    result["_debug_request_body"] = body
+    return result
 
 
 def _plan_schema(tool_names: list[str]) -> dict[str, Any]:
@@ -308,6 +315,7 @@ def _generate_plan(
     payload = _responses_request(api_key=api_key, base_url=base_url, body=body)
     plan = json.loads(_extract_output_text(payload))
     plan["tool_calls"] = _normalize_plan_steps(list(plan.get("tool_calls", [])))
+    plan["_debug_request_body"] = body
     return plan
 
 
@@ -575,6 +583,7 @@ def run_planner_turn(
 ) -> dict[str, Any]:
     del max_iterations
     current_state = dict(session_state or {})
+    model_request: dict[str, Any] | None = None
     conversation_history = _normalize_history(current_state.get("conversation_history"))
     conversation_history = _append_history(conversation_history, "user", message)
 
@@ -646,6 +655,7 @@ def run_planner_turn(
             conversation_history=conversation_history,
             config=config,
         )
+        model_request = _coerce_dict(plan_reply.pop("_debug_request_body"))
 
         if plan_reply["action"] == "approve":
             assistant_message = "Spec review approved. Start the run when you're ready."
@@ -675,6 +685,7 @@ def run_planner_turn(
                 "result": {
                     "mode": "planner",
                     "spec_review": pending_spec_review,
+                    "model_request": model_request,
                 },
             }
 
@@ -691,6 +702,7 @@ def run_planner_turn(
                 last_tool_trace=_coerce_trace(current_state.get("tool_trace")),
                 request_hints=request_hints,
             )
+            model_request = _coerce_dict(plan.pop("_debug_request_body"))
             rendered_message = _render_plan_message(plan)
             return {
                 "status": "needs_clarification",
@@ -712,6 +724,7 @@ def run_planner_turn(
                 "result": {
                     "mode": "planner",
                     "plan_preview": plan,
+                    "model_request": model_request,
                 },
             }
 
@@ -731,6 +744,7 @@ def run_planner_turn(
             "result": {
                 "mode": "planner",
                 "spec_review": pending_spec_review,
+                "model_request": model_request,
             },
         }
 
@@ -743,6 +757,7 @@ def run_planner_turn(
             conversation_history=conversation_history,
             config=config,
         )
+        model_request = _coerce_dict(plan_reply.pop("_debug_request_body"))
 
         if plan_reply["action"] == "approve":
             spec_review = _build_spec_review(list(pending_plan), config, request_hints=request_hints)
@@ -775,6 +790,7 @@ def run_planner_turn(
                 "result": {
                     "mode": "planner",
                     "spec_review": spec_review,
+                    "model_request": model_request,
                     **(
                         {
                             "plan_preview": {
@@ -802,6 +818,7 @@ def run_planner_turn(
                 last_tool_trace=_coerce_trace(current_state.get("tool_trace")),
                 request_hints=request_hints,
             )
+            model_request = _coerce_dict(plan.pop("_debug_request_body"))
             rendered_message = _render_plan_message(plan)
             return {
                 "status": "needs_clarification",
@@ -823,6 +840,7 @@ def run_planner_turn(
                 "result": {
                     "mode": "planner",
                     "plan_preview": plan,
+                    "model_request": model_request,
                 },
             }
 
@@ -846,6 +864,7 @@ def run_planner_turn(
                     "human_readable_plan": stored_human_readable_plan,
                     "tool_calls": pending_plan,
                 },
+                "model_request": model_request,
             },
         }
 
@@ -858,6 +877,7 @@ def run_planner_turn(
         last_tool_trace=_coerce_trace(current_state.get("tool_trace")),
         request_hints=request_hints,
     )
+    model_request = _coerce_dict(plan.pop("_debug_request_body"))
     rendered_message = _render_plan_message(plan)
     return {
         "status": "needs_clarification",
@@ -879,5 +899,6 @@ def run_planner_turn(
         "result": {
             "mode": "planner",
             "plan_preview": plan,
+            "model_request": model_request,
         },
     }
