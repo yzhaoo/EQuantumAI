@@ -120,6 +120,15 @@ export type HistoryRunItem = {
   result: Record<string, unknown> | null;
 };
 
+export type ToolCallClientRequest = {
+  tool_name: string;
+  arguments?: Record<string, unknown>;
+  parser?: string;
+  openai_model?: string;
+  profile?: string;
+  device_shape?: string;
+};
+
 export type ViewerSnapshotsResponse = {
   snapshots: string[];
   has_static: boolean;
@@ -256,6 +265,13 @@ export function sendAgentTurn(payload: AgentTurnRequest): Promise<AgentTurnRespo
 
 export function sendPlannerTurn(payload: PlannerTurnRequest): Promise<AgentTurnResponse> {
   return requestJson<AgentTurnResponse>("/agent/plan", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function callTool(payload: ToolCallClientRequest): Promise<{ tool_name: string; ok: boolean; result: Record<string, unknown> | null; error: string | null }> {
+  return requestJson("/tools/call", {
     method: "POST",
     body: JSON.stringify(payload),
   });

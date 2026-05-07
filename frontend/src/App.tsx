@@ -4,6 +4,7 @@ import {
   type PlannerModel,
   abortRun,
   approveManualCheck,
+  callTool,
   createPlannerRun,
   createRun,
   fetchHistoryRuns,
@@ -19,8 +20,9 @@ import { ChatPanel, type ChatMessage } from "./components/ChatPanel";
 import { SetupGeometryViewer } from "./components/viewer/SetupGeometryViewer";
 import { SnapshotViewer } from "./components/viewer/SnapshotViewer";
 import { ConvergenceChart } from "./components/viewer/ConvergenceChart";
+import { ResultsViewer } from "./components/viewer/ResultsViewer";
 
-type WorkspaceView = "setup" | "simulation" | "history" | "conversation";
+type WorkspaceView = "setup" | "simulation" | "results" | "history" | "conversation";
 type InspectorTab = "simulation-info" | "terminal";
 
 function buildMessage(role: ChatMessage["role"], text: string, response?: AgentTurnResponse): ChatMessage {
@@ -129,13 +131,14 @@ function SimulationStage({
 
 function HistoryStage({
   historyRuns,
-  selectedRunPath,
-  onSelectRun,
+  selectedRunPaths,
+  onToggleRun,
 }: {
   historyRuns: HistoryRunItem[];
-  selectedRunPath: string | null;
-  onSelectRun: (runPath: string) => void;
+  selectedRunPaths: string[];
+  onToggleRun: (runPath: string) => void;
 }) {
+  const selectedRuns = historyRuns.filter((run) => selectedRunPaths.includes(run.run_path));
   return (
     <section className="stage-card history-stage">
       <div className="stage-header">
@@ -148,8 +151,8 @@ function HistoryStage({
             {historyRuns.length === 0 ? <p>No saved runs found under `Datas`.</p> : historyRuns.map((run) => (
               <button
                 key={run.run_path}
-                className={`history-entry history-run-card ${selectedRunPath === run.run_path ? "active" : ""}`}
-                onClick={() => onSelectRun(run.run_path)}
+                className={`history-entry history-run-card ${selectedRunPaths.includes(run.run_path) ? "active" : ""}`}
+                onClick={() => onToggleRun(run.run_path)}
                 type="button"
               >
                 <span>{run.profile ?? "profile"} / {run.run_name}</span>
@@ -159,24 +162,21 @@ function HistoryStage({
           </div>
         </div>
         <div className="history-card">
-          <h3>Selected Run</h3>
-          {historyRuns.find((run) => run.run_path === selectedRunPath) ? (
-            <dl className="history-facts">
-              {(() => {
-                const run = historyRuns.find((item) => item.run_path === selectedRunPath)!;
-                return (
-                  <>
-                    <div><dt>Path</dt><dd>{run.run_name}</dd></div>
-                    <div><dt>Status</dt><dd>{run.status}</dd></div>
-                    <div><dt>Profile</dt><dd>{formatValue(run.profile)}</dd></div>
-                    <div><dt>Task</dt><dd>{formatValue(run.task)}</dd></div>
-                    <div><dt>Snapshots</dt><dd>{run.snapshot_count}</dd></div>
-                  </>
-                );
-              })()}
-            </dl>
+          <h3>{selectedRuns.length === 2 ? "Selected Runs For Comparison" : "Selected Run"}</h3>
+          {selectedRuns.length > 0 ? (
+            <div className="history-scroll">
+              {selectedRuns.map((run) => (
+                <dl key={run.run_path} className="history-facts">
+                  <div><dt>Path</dt><dd>{run.run_name}</dd></div>
+                  <div><dt>Status</dt><dd>{run.status}</dd></div>
+                  <div><dt>Profile</dt><dd>{formatValue(run.profile)}</dd></div>
+                  <div><dt>Task</dt><dd>{formatValue(run.task)}</dd></div>
+                  <div><dt>Snapshots</dt><dd>{run.snapshot_count}</dd></div>
+                </dl>
+              ))}
+            </div>
           ) : (
-            <p>Select a saved run to enter visualization mode.</p>
+            <p>Select one run to inspect it, or two runs to make them available for comparison on the results page and in the agent context.</p>
           )}
         </div>
       </div>
@@ -230,6 +230,84 @@ function ConversationStage({
   );
 }
 
+type ResultVisualization =
+  | { type: "ldos_volume_3d"; artifact_dir?: string; snapshot?: string; energy?: number[]; site_ids?: number[]; ldos_matrix?: Array<Array<number | null>> }
+  | { type: "ldos_linecut_with_ui"; artifact_dir?: string; snapshot?: string; distance_along?: Array<number | null>; energy?: Array<number | null>; ldos_matrix?: Array<Array<number | null>>; overlays?: Array<{ snapshot: string; Ui: Array<number | null>; is_current: boolean }> }
+  | { type: "ldos_linecut_multi"; items?: Array<Record<string, unknown>> }
+  | { type: "ui_linecut_compare"; traces?: Array<{ label?: string; distance_along?: Array<number | null>; values?: Array<number | null> }> }
+  | { type: "ldos_ui_heatmap"; artifact_dir?: string; snapshot?: string; x?: Array<number | null>; y?: Array<number | null>; values?: Array<number | null>; color_min?: number; color_max?: number }
+  | { type: "ldos_ui_heatmap_multi"; items?: Array<Record<string, unknown>> }
+  | { type: "ldos_comparison"; label_a?: string; label_b?: string; energy?: number[]; ldos_a?: number[]; ldos_b?: number[]; delta?: number[] }
+  | Record<string, unknown>;
+
+type ResultPlotOption = {
+  id: "ldos_volume_3d" | "ldos_linecut_with_ui" | "ldos_ui_heatmap" | "ldos_comparison" | "ui_linecut_compare";
+  label: string;
+  description: string;
+};
+
+function extractResultVisualizations(
+  response: AgentTurnResponse | null,
+  runState: RunStateResponse | null,
+): ResultVisualization[] {
+  const visualizations: ResultVisualization[] = [];
+  const pushIfVisualization = (value: unknown) => {
+    if (value && typeof value === "object" && typeof (value as { type?: unknown }).type === "string") {
+      visualizations.push(value as ResultVisualization);
+    }
+  };
+
+  const responseTrace =
+    (response?.result?.tool_trace as Array<Record<string, unknown>> | undefined) ??
+    (response?.session_state?.tool_trace as Array<Record<string, unknown>> | undefined) ??
+    [];
+  for (const step of responseTrace) {
+    const result = step.result as Record<string, unknown> | undefined;
+    pushIfVisualization(result?.visualization);
+  }
+
+  const runTrace = (runState?.result?.tool_trace as Array<Record<string, unknown>> | undefined) ?? [];
+  for (const step of runTrace) {
+    const result = step.result as Record<string, unknown> | undefined;
+    pushIfVisualization(result?.visualization);
+  }
+  return visualizations;
+}
+
+function ResultStage({
+  source,
+  visualizations,
+  infoLines,
+  plotOptions,
+  onOpenPlot,
+  onClearPlots,
+}: {
+  source:
+    | { kind: "live"; runId: string | null; runStatus: string | null }
+    | { kind: "history"; runPath: string };
+  visualizations: ResultVisualization[];
+  infoLines: string[];
+  plotOptions: ResultPlotOption[];
+  onOpenPlot: (plotId: ResultPlotOption["id"]) => void;
+  onClearPlots: () => void;
+}) {
+  return (
+    <section className="stage-card">
+      <div className="stage-header">
+        <h2>Results</h2>
+      </div>
+      <ResultsViewer
+        visualizations={visualizations}
+        infoLines={infoLines}
+        plotOptions={plotOptions}
+        onOpenPlot={onOpenPlot}
+        onClearPlots={onClearPlots}
+        source={source}
+      />
+    </section>
+  );
+}
+
 export default function App() {
   const plannerModels: Array<{ id: PlannerModel; label: string }> = [
     { id: "gpt-4o-mini", label: "GPT-4o Mini" },
@@ -254,11 +332,36 @@ export default function App() {
   const [plannerModel, setPlannerModel] = useState<PlannerModel>("gpt-4o-mini");
   const [historyRuns, setHistoryRuns] = useState<HistoryRunItem[]>([]);
   const [selectedHistoryRunPath, setSelectedHistoryRunPath] = useState<string | null>(null);
+  const [selectedHistoryRunPaths, setSelectedHistoryRunPaths] = useState<string[]>([]);
+  const [manualResultVisualizations, setManualResultVisualizations] = useState<ResultVisualization[]>([]);
   const pollTimer = useRef<number | null>(null);
   const lastRunNoticeKey = useRef<string | null>(null);
 
   const launchable = lastAgentResponse?.status === "running" && currentSpec !== null;
   const selectedHistoryRun = historyRuns.find((run) => run.run_path === selectedHistoryRunPath) ?? null;
+  const selectedHistoryRuns = historyRuns.filter((run) => selectedHistoryRunPaths.includes(run.run_path));
+  const selectedHistoryRunContext = useMemo(
+    () =>
+      selectedHistoryRuns
+        .filter((run) => typeof run.artifact_dir === "string" && run.artifact_dir.length > 0)
+        .map((run) => ({
+          artifact_dir: run.artifact_dir,
+          spec: run.spec,
+          result: run.result,
+        })),
+    [selectedHistoryRuns],
+  );
+  const currentCompletedRunContext = useMemo(() => {
+    if (runState?.status !== "completed" || !runState.result || typeof runState.result !== "object") {
+      return [];
+    }
+    const artifact_dir = typeof runState.result.artifact_dir === "string" ? runState.result.artifact_dir : null;
+    if (!artifact_dir) {
+      return [];
+    }
+    return [{ artifact_dir, spec: runState.spec, result: runState.result }];
+  }, [runState]);
+  const resultContextRuns = selectedHistoryRunContext.length > 0 ? selectedHistoryRunContext : currentCompletedRunContext;
   const displayedSpec = (selectedHistoryRun?.spec as SimulationSpec | null) ?? currentSpec;
   const visualizationSource = useMemo(
     () =>
@@ -268,6 +371,13 @@ export default function App() {
     [selectedHistoryRun, runId, runState?.status],
   );
   const visualizationStatus = selectedHistoryRun?.status ?? runState?.status ?? null;
+  const resultVisualizations = useMemo(
+    () => {
+      const fromAgent = extractResultVisualizations(lastAgentResponse, runState);
+      return manualResultVisualizations.length > 0 ? [...manualResultVisualizations, ...fromAgent] : fromAgent;
+    },
+    [lastAgentResponse, runState, manualResultVisualizations],
+  );
   const plannerToolTrace =
     agentMode === "planner"
       ? (((lastAgentResponse?.result?.tool_trace as Array<Record<string, unknown>> | undefined) ??
@@ -282,6 +392,10 @@ export default function App() {
         setHistoryRuns([]);
       });
   }, [runState?.status]);
+
+  useEffect(() => {
+    setManualResultVisualizations([]);
+  }, [selectedHistoryRunPaths.join("|"), runState?.result ? JSON.stringify((runState.result as Record<string, unknown>).artifact_dir ?? null) : ""]);
 
   useEffect(() => {
     if (!runId) {
@@ -348,7 +462,32 @@ export default function App() {
       return;
     }
 
-    setMessages((prev) => [...prev, buildMessage("assistant", "Run completed.")]);
+    setMessages((prev) => [
+      ...prev,
+      buildMessage(
+        "assistant",
+        "Run completed. I’m standing by for your next run-planning request.",
+      ),
+    ]);
+    const completedRunContext =
+      runState.result && typeof runState.result === "object"
+        ? {
+            artifact_dir: typeof runState.result.artifact_dir === "string" ? runState.result.artifact_dir : null,
+            spec: runState.spec,
+            result: runState.result,
+          }
+        : null;
+    if (completedRunContext?.artifact_dir) {
+      setPlannerSessionState((prev) => ({
+        ...(prev ?? {}),
+        completed_runs: [...(((prev?.completed_runs as Array<Record<string, unknown>> | undefined) ?? []).filter((entry) => entry?.artifact_dir !== completedRunContext.artifact_dir)), completedRunContext].slice(-4),
+      }));
+      setParserSessionState((prev) => ({
+        ...(prev ?? {}),
+        completed_runs: [...(((prev?.completed_runs as Array<Record<string, unknown>> | undefined) ?? []).filter((entry) => entry?.artifact_dir !== completedRunContext.artifact_dir)), completedRunContext].slice(-4),
+      }));
+    }
+    setWorkspaceView("results");
   }, [runId, runState?.status, runState?.error]);
 
   async function handleSubmit() {
@@ -363,18 +502,31 @@ export default function App() {
     setDraft("");
 
     try {
+      const mergeCompletedRuns = (state: Record<string, unknown> | null | undefined) => {
+        const baseRuns = ((state?.completed_runs as Array<Record<string, unknown>> | undefined) ?? []);
+        const merged = [...baseRuns];
+        for (const run of selectedHistoryRunContext) {
+          if (!merged.some((entry) => entry?.artifact_dir === run.artifact_dir)) {
+            merged.push(run);
+          }
+        }
+        return {
+          ...(state ?? {}),
+          completed_runs: merged.slice(-4),
+        };
+      };
       const response =
         agentMode === "planner"
           ? await sendPlannerTurn({
               message: text,
-              session_state: plannerSessionState,
+              session_state: mergeCompletedRuns(plannerSessionState),
               parser: "openai",
               openai_model: plannerModel,
               max_iterations: 12,
             })
           : await sendAgentTurn({
               message: text,
-              session_state: parserSessionState,
+              session_state: mergeCompletedRuns(parserSessionState),
               execute: false,
               parser: "openai",
             });
@@ -480,6 +632,205 @@ export default function App() {
     }
   }
 
+  const resultInfoLines = useMemo(() => {
+    if (selectedHistoryRuns.length === 2) {
+      return ["Comparison context", selectedHistoryRuns[0].run_name, selectedHistoryRuns[1].run_name];
+    }
+    if (selectedHistoryRuns.length === 1) {
+      return ["History run selected", selectedHistoryRuns[0].run_name];
+    }
+    if (currentCompletedRunContext.length === 1) {
+      return [
+        "Current completed run",
+        String(currentCompletedRunContext[0].artifact_dir).split("/").slice(-2).join("/"),
+      ];
+    }
+    return ["No run selected yet", "Select one history run to inspect it, or two to compare them."];
+  }, [selectedHistoryRuns, currentCompletedRunContext]);
+
+  const resultPlotOptions = useMemo<ResultPlotOption[]>(() => {
+    if (resultContextRuns.length >= 2) {
+      return [
+        { id: "ldos_comparison", label: "LDOS Compare", description: "Compare aligned LDOS curves from two completed runs." },
+        { id: "ldos_linecut_with_ui", label: "DOS Heatmap", description: "Open one LDOS heatmap-along-linecut window for each selected run." },
+        { id: "ldos_ui_heatmap", label: "LDOS @ Ui", description: "Open the LDOS@Ui heatmaps for both selected runs in one window." },
+        { id: "ui_linecut_compare", label: "Ui Linecut", description: "Compare Ui along the default linecut across both runs." },
+      ];
+    }
+    if (resultContextRuns.length === 1) {
+      return [
+        { id: "ldos_volume_3d", label: "3D LDOS", description: "Energy vs site id vs density surface." },
+        { id: "ldos_linecut_with_ui", label: "LDOS Linecut", description: "LDOS cut with Ui overlay." },
+        { id: "ldos_ui_heatmap", label: "LDOS @ Ui", description: "Quantum-layer LDOS@Ui heatmap." },
+      ];
+    }
+    return [];
+  }, [resultContextRuns]);
+
+  async function handleOpenResultPlot(plotId: ResultPlotOption["id"]) {
+    if (resultContextRuns.length === 0) {
+      setErrorMessage("No completed run context is available for the results page yet.");
+      return;
+    }
+    setErrorMessage(null);
+    try {
+      let payload;
+      if (plotId === "ldos_comparison") {
+        if (resultContextRuns.length < 2) {
+          throw new Error("Select two runs before opening an LDOS comparison.");
+        }
+        payload = await callTool({
+          tool_name: "compare_ldos_runs",
+          arguments: {
+            artifact_dir_a: resultContextRuns[0].artifact_dir,
+            artifact_dir_b: resultContextRuns[1].artifact_dir,
+          },
+          parser: "openai",
+        });
+        const visualization = payload.result?.visualization;
+        if (visualization && typeof visualization === "object") {
+          setManualResultVisualizations((prev) => {
+            const next = [
+              ...prev.filter((item) => String((item as { type?: unknown }).type ?? "") !== "ldos_comparison"),
+              visualization as ResultVisualization,
+            ];
+            return next;
+          });
+          setWorkspaceView("results");
+        }
+        return;
+      } else if (plotId === "ui_linecut_compare") {
+        if (resultContextRuns.length < 2) {
+          throw new Error("Select two runs before opening a Ui linecut comparison.");
+        }
+        payload = await callTool({
+          tool_name: "compare_ui_linecuts",
+          arguments: {
+            artifact_dirs: resultContextRuns.map((run) => run.artifact_dir),
+          },
+          parser: "openai",
+        });
+        const visualization = payload.result?.visualization;
+        if (visualization && typeof visualization === "object") {
+          setManualResultVisualizations((prev) => {
+            const next = [
+              ...prev.filter((item) => String((item as { type?: unknown }).type ?? "") !== "ui_linecut_compare"),
+              visualization as ResultVisualization,
+            ];
+            return next;
+          });
+          setWorkspaceView("results");
+        }
+        return;
+      } else if (plotId === "ldos_linecut_with_ui" && resultContextRuns.length >= 2) {
+        const results = await Promise.all(
+          resultContextRuns.map((run) =>
+            callTool({
+              tool_name: "show_ldos_linecut_with_ui",
+              arguments: {
+                artifact_dir: run.artifact_dir,
+              },
+              parser: "openai",
+            }),
+          ),
+        );
+        const visualizations = results
+          .map((response) => response.result?.visualization)
+          .filter((visualization): visualization is ResultVisualization => Boolean(visualization && typeof visualization === "object"));
+        if (visualizations.length > 0) {
+          const combinedVisualization: ResultVisualization = {
+            type: "ldos_linecut_multi",
+            items: visualizations as Array<Record<string, unknown>>,
+          };
+          setManualResultVisualizations((prev) => {
+            const preserved = prev.filter((item) => {
+              const itemType = String((item as { type?: unknown }).type ?? "");
+              return itemType !== "ldos_linecut_with_ui" && itemType !== "ldos_linecut_multi";
+            });
+            return [...preserved, combinedVisualization];
+          });
+          setWorkspaceView("results");
+        }
+        return;
+      } else if (plotId === "ldos_ui_heatmap" && resultContextRuns.length >= 2) {
+        const results = await Promise.all(
+          resultContextRuns.map((run) =>
+            callTool({
+              tool_name: "show_ldos_ui_heatmap",
+              arguments: {
+                artifact_dir: run.artifact_dir,
+              },
+              parser: "openai",
+            }),
+          ),
+        );
+        const visualizations = results
+          .map((response) => response.result?.visualization)
+          .filter((visualization): visualization is ResultVisualization => Boolean(visualization && typeof visualization === "object"));
+        if (visualizations.length > 0) {
+          const combinedVisualization: ResultVisualization = {
+            type: "ldos_ui_heatmap_multi",
+            items: visualizations as Array<Record<string, unknown>>,
+          };
+          setManualResultVisualizations((prev) => {
+            const preserved = prev.filter((item) => {
+              const itemType = String((item as { type?: unknown }).type ?? "");
+              return itemType !== "ldos_ui_heatmap" && itemType !== "ldos_ui_heatmap_multi";
+            });
+            return [...preserved, combinedVisualization];
+          });
+          setWorkspaceView("results");
+        }
+        return;
+      } else {
+        payload = await callTool({
+          tool_name: plotId === "ldos_volume_3d" ? "show_ldos_volume_3d" : plotId === "ldos_linecut_with_ui" ? "show_ldos_linecut_with_ui" : "show_ldos_ui_heatmap",
+          arguments: {
+            artifact_dir: resultContextRuns[0].artifact_dir,
+          },
+          parser: "openai",
+        });
+      }
+      const visualization = payload.result?.visualization;
+      if (visualization && typeof visualization === "object") {
+        setManualResultVisualizations((prev) => {
+          const incoming = visualization as ResultVisualization;
+          const incomingType = String((incoming as { type?: unknown }).type ?? "");
+          const incomingArtifact = String((incoming as { artifact_dir?: unknown }).artifact_dir ?? "");
+          const preserved = prev.filter((item) => {
+            const existingType = String((item as { type?: unknown }).type ?? "");
+            const existingArtifact = String((item as { artifact_dir?: unknown }).artifact_dir ?? "");
+            if (incomingType === "ldos_linecut_with_ui") {
+              return !(existingType === incomingType && existingArtifact === incomingArtifact);
+            }
+            return existingType !== incomingType;
+          });
+          return [...preserved, incoming];
+        });
+        setWorkspaceView("results");
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to open the requested results plot.");
+    }
+  }
+
+  function handleClearResultPlots() {
+    setManualResultVisualizations([]);
+  }
+
+  function handleToggleHistoryRun(runPath: string) {
+    setSelectedHistoryRunPaths((prev) => {
+      if (prev.includes(runPath)) {
+        const next = prev.filter((item) => item !== runPath);
+        setSelectedHistoryRunPath(next.length > 0 ? next[next.length - 1] : null);
+        return next;
+      }
+      const next = [...prev, runPath].slice(-2);
+      setSelectedHistoryRunPath(runPath);
+      return next;
+    });
+  }
+
   const agentTabs = [
     { id: "parser" as const, label: "LLM Parser" },
     { id: "planner" as const, label: "Task Planner" },
@@ -488,6 +839,7 @@ export default function App() {
   const workspaceTabs = [
     { id: "setup" as const, label: "Setup" },
     { id: "simulation" as const, label: "Simulation" },
+    { id: "results" as const, label: "Results" },
     { id: "history" as const, label: "History" },
     { id: "conversation" as const, label: "Conversation Log" },
   ];
@@ -518,7 +870,11 @@ export default function App() {
         const matchedRun = matchHistoryRunByArtifactDir(refreshedHistory, latestArtifactDir);
         if (matchedRun) {
           setSelectedHistoryRunPath(matchedRun.run_path);
-          setWorkspaceView("simulation");
+          setSelectedHistoryRunPaths((prev) => {
+            const merged = [...prev.filter((path) => path !== matchedRun.run_path), matchedRun.run_path];
+            return merged.slice(-2);
+          });
+          setWorkspaceView("results");
         }
       })
       .catch(() => {
@@ -549,10 +905,17 @@ export default function App() {
           <div className="main-stage">
             {workspaceView === "setup" ? <SetupStage source={visualizationSource} /> : null}
             {workspaceView === "simulation" ? <SimulationStage source={visualizationSource} currentStatus={visualizationStatus} /> : null}
-            {workspaceView === "history" ? <HistoryStage historyRuns={historyRuns} selectedRunPath={selectedHistoryRunPath} onSelectRun={(runPath) => {
-              setSelectedHistoryRunPath(runPath);
-              setWorkspaceView("setup");
-            }} /> : null}
+            {workspaceView === "results" ? (
+              <ResultStage
+                source={visualizationSource}
+                visualizations={resultVisualizations}
+                infoLines={resultInfoLines}
+                plotOptions={resultPlotOptions}
+                onOpenPlot={handleOpenResultPlot}
+                onClearPlots={handleClearResultPlots}
+              />
+            ) : null}
+            {workspaceView === "history" ? <HistoryStage historyRuns={historyRuns} selectedRunPaths={selectedHistoryRunPaths} onToggleRun={handleToggleHistoryRun} /> : null}
             {workspaceView === "conversation" ? <ConversationStage messages={messages} /> : null}
           </div>
         </div>
@@ -645,7 +1008,7 @@ export default function App() {
                     </div>
                     <div className="metric-card">
                       <span>Task</span>
-                      <strong>{displayedSpec?.task ?? "dos"}</strong>
+                      <strong>{displayedSpec?.task ?? "artifact-driven"}</strong>
                     </div>
                     <div className="metric-card">
                       <span>Lattice</span>

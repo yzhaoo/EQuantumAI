@@ -20,10 +20,7 @@ DEVICE_SHAPE_DATA_DIRS = {
     "squaregate_center": "squaregate_center",
 }
 
-REQUIRED_FIELDS_BY_TASK = {
-    "dos": ["backgate_voltage", "magnetic_field_T", "solve_self_consistent"],
-    "ldos": ["backgate_voltage", "magnetic_field_T", "solve_self_consistent"],
-}
+BASE_REQUIRED_FIELDS = ["backgate_voltage", "magnetic_field_T", "solve_self_consistent"]
 
 OPTIONAL_RUNTIME_FIELDS = [
     "device_shape",
@@ -192,10 +189,8 @@ def normalize_spec(spec: dict[str, Any] | None, default_profile: str = "dotgate_
 
 
 def get_required_fields(spec: dict[str, Any]) -> list[str]:
-    task = spec.get("task")
-    if task is None:
-        return ["task"]
-    return list(REQUIRED_FIELDS_BY_TASK.get(task, []))
+    del spec
+    return list(BASE_REQUIRED_FIELDS)
 
 
 def get_missing_fields(spec: dict[str, Any]) -> list[str]:

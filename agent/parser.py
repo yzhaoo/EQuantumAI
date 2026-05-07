@@ -11,7 +11,7 @@ from agent.schemas import AgentResponse, AgentRuntimeConfig
 from simulation import profiles, setup
 
 OPTIONAL_CONFIRM_FIELDS = list(profiles.OPTIONAL_RUNTIME_FIELDS)
-REQUIRED_FIELDS_BY_TASK = dict(profiles.REQUIRED_FIELDS_BY_TASK)
+REQUIRED_FIELDS_BY_TASK = {"default": list(profiles.BASE_REQUIRED_FIELDS)}
 SPEC_FIELDS = list(profiles.SPEC_FIELDS)
 PROFILES = profiles.PROFILES
 TURN_INTENTS = [
@@ -95,7 +95,6 @@ def get_required_fields(spec):
 
 def clarification_question_for_field(field_name):
     questions = {
-        "task": "Do you want DOS or LDOS?",
         "lattice_type": "What lattice type should I use?",
         "device_shape": "Which device shape should I use, for example dotgate or squaregate_center?",
         "backgate_voltage": "What backgate voltage should I use, in volts?",
@@ -183,9 +182,9 @@ def infer_device_shape_optional(query):
 
 def parse_query_partial(query, default_profile="dotgate_center"):
     solve_self_consistent = None
-    if re.search(r"\b(no scf|skip self[- ]consistent|without self[- ]consistent)\b", query, flags=re.IGNORECASE):
+    if re.search(r"\b(no scf|skip self[- ]consistent|skip self[- ]consistency|without self[- ]consistent|without self[- ]consistency)\b", query, flags=re.IGNORECASE):
         solve_self_consistent = False
-    elif re.search(r"\bself[- ]consistent\b", query, flags=re.IGNORECASE):
+    elif re.search(r"\b(self[- ]consistent|self[- ]consistency)\b", query, flags=re.IGNORECASE):
         solve_self_consistent = True
 
     convergence_match = re.search(
@@ -631,10 +630,12 @@ def parse_reply_for_field(field_name, text):
         if is_affirmative_reply(text):
             return True
         if is_negative_reply(text) or re.search(
-            r"\b(no scf|skip self[- ]consistent|without self[- ]consisten(?:t|cy))\b",
+            r"\b(no scf|skip self[- ]consistent|skip self[- ]consistency|without self[- ]consisten(?:t|cy))\b",
             lowered,
         ):
             return False
+        if re.search(r"\b(self[- ]consistent|self[- ]consistency)\b", lowered):
+            return True
         return None
     if field_name == "spacing0":
         return parse_numeric_reply(
@@ -790,7 +791,6 @@ def build_setup_generation_confirmation_message(spec, setup_info):
 
 def build_final_confirmation_message(spec):
     summary = (
-        f"task={spec.get('task')}, "
         f"lattice_type={spec.get('lattice_type')}, "
         f"device_shape={format_default_value(spec.get('device_shape'))}, "
         f"backgate_voltage={format_default_value(spec.get('backgate_voltage'))}, "
@@ -850,6 +850,7 @@ def process_session_spec(spec, session_state, args, execute=True):
     session_state["spec"] = normalize_spec(spec, default_profile=session_state.get("profile", "dotgate_center"))
     session_state["missing_fields"] = missing_fields
     session_state["active"] = True
+    session_state["default_values"] = get_default_spec_values(args, session_state["spec"]["profile"])
 
     if missing_fields:
         question = clarification_question_for_field(missing_fields[0])
@@ -862,7 +863,12 @@ def process_session_spec(spec, session_state, args, execute=True):
             session_state=session_state,
         )
 
-    pending_default_fields = session_state.get("pending_default_fields", [])
+    pending_default_fields = fields_needing_default_confirmation(
+        session_state["spec"],
+        session_state.get("explicit_fields", []),
+        session_state["default_values"],
+    )
+    session_state["pending_default_fields"] = pending_default_fields
     if pending_default_fields and not session_state.get("defaults_confirmed", False):
         message = build_defaults_confirmation_message(pending_default_fields, session_state["default_values"])
         session_state.setdefault("history", []).append({"role": "assistant", "text": message})
@@ -873,6 +879,14 @@ def process_session_spec(spec, session_state, args, execute=True):
             missing_fields=list(session_state.get("missing_fields", [])),
             session_state=session_state,
         )
+
+    if session_state.get("defaults_confirmed", False):
+        session_state["spec"] = profiles.apply_defaults_to_spec(
+            session_state["spec"],
+            session_state["default_values"],
+            OPTIONAL_CONFIRM_FIELDS,
+        )
+        session_state["pending_default_fields"] = []
 
     setup_info = setup.get_setup_generation_info(session_state["spec"])
     session_state["pending_setup_generation"] = setup_info["requires_generation"]
@@ -1086,7 +1100,12 @@ def continue_turn(session_state: dict[str, Any], user_text: str, args=None, exec
                 session_state=updated_state,
             )
 
-        if turn_parse.get("intent") == "confirm_defaults" or override_detected or meaningful_spec_change_detected:
+        if (
+            turn_parse.get("intent") == "confirm_defaults"
+            or is_affirmative_reply(user_text)
+            or override_detected
+            or meaningful_spec_change_detected
+        ):
             merged_spec = profiles.apply_defaults_to_spec(merged_spec, default_values, pending_default_fields)
             defaults_confirmed = True
             pending_default_fields = []
@@ -1117,7 +1136,7 @@ def continue_turn(session_state: dict[str, Any], user_text: str, args=None, exec
         if turn_parse.get("intent") == "confirm_run":
             run_confirmed = True
         else:
-            run_confirmed = is_start_confirmation_reply(user_text)
+            run_confirmed = is_start_confirmation_reply(user_text) or is_affirmative_reply(user_text)
 
     updated_state = build_session_state(
         merged_spec,

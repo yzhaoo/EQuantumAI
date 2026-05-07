@@ -165,42 +165,26 @@ def run_spec(
 
     status_cb("exporting_artifacts")
     _raise_if_aborted(should_abort)
-    energy_grid = np.linspace(-6 * syst.t, 6 * syst.t, runtime_config.energy_points)
     result = artifacts.summarize_run(fsc, spec, phi, artifact_dir)
     result["setup_dir"] = setup_dir
     result["config_file"] = config_file
     result["static_reference"] = os.path.join(artifact_dir, "run_static.npz")
-
-    if spec["task"] == "dos":
-        energy, rho = fsc.qsystem.get_dos(
-            w=energy_grid,
-            M=runtime_config.moments,
-            n_random=runtime_config.n_random,
-            eps=runtime_config.eps,
-            kernel=runtime_config.kernel,
-        )
-        result["dos_preview"] = {
-            "energy": energy.tolist(),
-            "dos": np.asarray(rho, dtype=float).tolist(),
-        }
-        if spec["solve_self_consistent"]:
-            result["artifacts"] = artifacts.save_dos_artifacts(artifact_dir, energy, rho)
-        else:
-            result["artifacts"] = {"static_reference": result["static_reference"]}
-    else:
-        site_id, energy, rho = artifacts.extract_center_ldos(fsc, site_mode="center")
-        result["ldos_site_id"] = site_id
-        result["ldos_energy_points"] = int(len(energy))
-        result["ldos_energy_range"] = [float(energy[0]), float(energy[-1])] if len(energy) else []
-        result["ldos_preview"] = {
-            "site_id": site_id,
-            "energy": energy.tolist(),
-            "ldos": rho.tolist(),
-        }
-        if spec["solve_self_consistent"]:
-            result["artifacts"] = artifacts.save_ldos_artifacts(artifact_dir, fsc, site_mode="center")[1]
-        else:
-            result["artifacts"] = {"static_reference": result["static_reference"]}
+    site_id, energy, rho = artifacts.extract_center_ldos(fsc, site_mode="center")
+    result["ldos_site_id"] = site_id
+    result["ldos_energy_points"] = int(len(energy))
+    result["ldos_energy_range"] = [float(energy[0]), float(energy[-1])] if len(energy) else []
+    result["ldos_preview"] = {
+        "site_id": site_id,
+        "energy": energy.tolist(),
+        "ldos": rho.tolist(),
+    }
+    result["available_result_views"] = [
+        "ldos_volume_3d",
+        "ldos_linecut_with_ui",
+        "ui_linecut_compare",
+        "ldos_ui_heatmap",
+    ]
+    result["artifacts"] = {"static_reference": result["static_reference"]}
 
     if manual_check_payload is not None:
         result["manual_check"] = manual_check_payload

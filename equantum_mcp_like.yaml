@@ -7,6 +7,7 @@ design_notes:
   - "Keep simulator primitives such as FSC.update_BC(...) behind safer wrappers."
   - "Prefer immutable spec/run handles so the agent can branch experiments safely."
   - "Treat solve_self_consistent as an explicit planning decision, not an implicit default."
+  - "Treat the run as artifact-producing first; choose result visualizations after completion instead of requiring DOS/LDOS at launch time."
 
 entities:
   spec_handle:
@@ -31,7 +32,6 @@ tools:
     description: "Create a new simulation spec from explicit values or partial natural-language intent."
     inputs:
       profile: "string = dotgate_center"
-      task: "string | null"
       lattice_type: "string | null"
       device_shape: "string | null"
       backgate_voltage: "float | null"
@@ -142,26 +142,6 @@ tools:
         - "run_spec"
       note: "When solve_self_consistent=false, do not call fsc.solve(...); use the initialized Ui and LDOS as the final state and persist only run_static.npz as the simulation artifact."
 
-  - name: "run_ldos"
-    description: "Convenience wrapper that forces task=ldos and executes the run."
-    inputs:
-      spec: "spec_handle"
-      require_manual_check: "bool = false"
-    outputs:
-      run: "run_handle"
-    implementation_hint:
-      note: "Thin wrapper over run_task after update_spec(task=ldos)."
-
-  - name: "run_dos"
-    description: "Convenience wrapper that forces task=dos and executes the run."
-    inputs:
-      spec: "spec_handle"
-      require_manual_check: "bool = false"
-    outputs:
-      run: "run_handle"
-    implementation_hint:
-      note: "Thin wrapper over run_task after update_spec(task=dos)."
-
   - name: "read_run_summary"
     description: "Load saved run summary and artifact references for a completed run."
     inputs:
@@ -191,6 +171,45 @@ tools:
       symbols:
         - "ldos_cut_data"
 
+  - name: "show_ldos_volume_3d"
+    description: "Prepare a 3D LDOS visualization payload with energy on x, site id on y, and density on z."
+    inputs:
+      run: "run_handle"
+      snapshot: "string | null"
+      max_sites: "int | null"
+    outputs:
+      visualization: "dict"
+
+  - name: "show_ldos_linecut_with_ui"
+    description: "Prepare an LDOS linecut along a chosen path with Ui overlay."
+    inputs:
+      run: "run_handle"
+      snapshot: "string | null"
+      p0: "list[float]"
+      p1: "list[float]"
+      cut_width: "float = 0.05"
+    outputs:
+      visualization: "dict"
+
+  - name: "compare_ui_linecuts"
+    description: "Prepare a Ui linecut comparison payload across multiple completed runs."
+    inputs:
+      runs: "list[run_handle]"
+      snapshot: "string | null"
+      p0: "list[float]"
+      p1: "list[float]"
+      cut_width: "float = 0.05"
+    outputs:
+      visualization: "dict"
+
+  - name: "show_ldos_ui_heatmap"
+    description: "Prepare the LDOS@Ui heatmap payload used by the main results canvas."
+    inputs:
+      run: "run_handle"
+      snapshot: "string | null"
+    outputs:
+      visualization: "dict"
+
   - name: "compare_ldos_runs"
     description: "Compare two LDOS runs and summarize differences in a structured way."
     inputs:
@@ -209,26 +228,26 @@ example_workflows:
   compare_ldos_across_B:
     user_request: "Calculate the local density of states of a square lattice under B=1 T and backgate voltage 0.2, then compare it to B=2 T."
     steps:
-      - "create_spec(task=ldos, lattice_type=square, backgate_voltage=0.2, magnetic_field_T=1.0)"
+      - "create_spec(lattice_type=square, backgate_voltage=0.2, magnetic_field_T=1.0)"
       - "validate_spec"
-      - "run_ldos -> run_a"
+      - "run_task -> run_a"
       - "clone_spec(spec_a) -> spec_b"
       - "update_spec(spec_b, {magnetic_field_T: 2.0})"
       - "validate_spec"
-      - "run_ldos -> run_b"
+      - "run_task -> run_b"
       - "compare_ldos_runs(run_a, run_b)"
   compare_before_and_after_self_consistency:
     user_request: "Compare the LDOS for a square lattice system under B=1 T and backgate voltage 0.2 V with and without self-consistency calculation."
     steps:
-      - "create_spec(task=ldos, lattice_type=square, backgate_voltage=0.2, magnetic_field_T=1.0)"
+      - "create_spec(lattice_type=square, backgate_voltage=0.2, magnetic_field_T=1.0)"
       - "clone_spec -> base_spec"
       - "update_spec(base_spec, {solve_self_consistent: false})"
       - "validate_spec"
-      - "run_ldos -> run_before_scf"
+      - "run_task -> run_before_scf"
       - "clone_spec(base_spec) -> spec_after_scf"
       - "update_spec(spec_after_scf, {solve_self_consistent: true})"
       - "validate_spec"
-      - "run_ldos -> run_after_scf"
+      - "run_task -> run_after_scf"
       - "compare_ldos_runs(run_before_scf, run_after_scf)"
 
 next_implementation_targets:

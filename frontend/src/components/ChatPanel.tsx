@@ -415,7 +415,7 @@ export function ChatPanel({
           <p className="shell-subtitle">
             {agentMode === "planner"
               ? "Ask for a multi-step experiment and let the planner use simulation tools directly."
-              : "Describe a DOS or LDOS run in natural language, then confirm defaults and launch it from the workbench."}
+              : "Describe the physical setup in natural language, then confirm defaults, launch the run, and keep using the chat to choose result views afterward."}
           </p>
         </header>
       ) : null}
@@ -432,7 +432,7 @@ export function ChatPanel({
                   </>
                 ) : (
                   <>
-                    Try: <strong>calculate the density of states for a square lattice system with backgate voltage 0.5 and magnetic field 1 T</strong>
+                    Try: <strong>prepare a square lattice system with backgate voltage 0.5 and magnetic field 1 T</strong>
                   </>
                 )}
               </p>
@@ -468,7 +468,7 @@ export function ChatPanel({
                   ? "A run is active. Use Abort Run below if you want to stop it."
                   : agentMode === "planner"
                     ? "Ask for a simulation plan or comparison workflow."
-                    : "Ask for a simulation, answer a clarification, or say 'use defaults' / 'start'."
+                    : "Ask for a simulation setup, answer a clarification, or say 'use defaults' / 'start'."
               }
             />
             <div className="composer-actions">
@@ -481,7 +481,7 @@ export function ChatPanel({
                       : "Working through the current turn..."
                     : agentMode === "planner"
                       ? "Planner mode executes tool calls on the server and returns a final summary."
-                      : "Multi-turn session state stays in the browser for now."}
+                      : "After the run completes, you can keep using this chat to choose result views and comparisons."}
               </span>
               {canAbort ? (
                 <button className="danger-button" onClick={onAbortRun}>

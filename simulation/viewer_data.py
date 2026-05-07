@@ -144,6 +144,12 @@ def list_snapshots(run_dir: str | os.PathLike[str]) -> list[str]:
 
 
 def load_snapshot(run_dir: str | os.PathLike[str], snapshot_name: str) -> dict[str, Any]:
+    if snapshot_name in {"run_static", "run_static.npz"}:
+        path = Path(run_dir) / "run_static.npz"
+        if not path.exists():
+            raise FileNotFoundError(f"Snapshot not found: {snapshot_name}")
+        data = np.load(path, allow_pickle=True)
+        return {key: data[key] for key in data.files}
     path = Path(run_dir) / snapshot_name
     if not path.exists():
         raise FileNotFoundError(f"Snapshot not found: {snapshot_name}")
@@ -152,6 +158,8 @@ def load_snapshot(run_dir: str | os.PathLike[str], snapshot_name: str) -> dict[s
 
 
 def _previous_snapshot_name(run_dir: str | os.PathLike[str], snapshot_name: str) -> str | None:
+    if snapshot_name in {"run_static", "run_static.npz"}:
+        return None
     snapshots = list_snapshots(run_dir)
     if snapshot_name not in snapshots:
         raise FileNotFoundError(f"Snapshot not found: {snapshot_name}")
@@ -483,4 +491,38 @@ def ldos_cut_data(
         "energy": _as_float_list(energy_reference),
         "ldos_matrix": [[_clean_scalar(value) for value in row] for row in rho_matrix.tolist()],
         "overlays": overlays,
+    }
+
+
+def quantum_ui_linecut_data(
+    run_dir: str | os.PathLike[str],
+    snapshot_name: str,
+    p0,
+    p1,
+    cut_width: float,
+) -> dict[str, Any]:
+    static_data = load_run_static(run_dir)
+    snapshot_data = load_snapshot(run_dir, snapshot_name)
+    idx_cut, coord_along = _quantum_cut_indices(static_data, p0, p1, cut_width)
+    if len(idx_cut) == 0:
+        return {
+            "snapshot": snapshot_name,
+            "p0": _clean_scalar(list(map(float, p0))),
+            "p1": _clean_scalar(list(map(float, p1))),
+            "cut_width": float(cut_width),
+            "distance_along": [],
+            "values": [],
+        }
+
+    qsites = np.asarray(static_data["Qsites"], dtype=int)
+    ui_all = np.asarray(snapshot_data["Ui"], dtype=float)
+    values = np.asarray([float(ui_all[int(qsites[local_index])]) for local_index in idx_cut], dtype=float)
+
+    return {
+        "snapshot": snapshot_name,
+        "p0": _clean_scalar(list(map(float, p0))),
+        "p1": _clean_scalar(list(map(float, p1))),
+        "cut_width": float(cut_width),
+        "distance_along": _as_float_list(coord_along),
+        "values": _as_float_list(values),
     }

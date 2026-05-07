@@ -124,6 +124,16 @@ def _collect_request_hints(
     return merged
 
 
+def _normalize_completed_runs(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            normalized.append(dict(item))
+    return normalized[-4:]
+
+
 def _planner_required_defaults(config: AgentRuntimeConfig, profile_name: str) -> dict[str, Any]:
     profile = profiles.get_profile_defaults(profile_name)
     return {
@@ -149,11 +159,14 @@ def _planner_plan_prompt(tool_names: list[str]) -> str:
         "Do not invent helper fields such as spec_ref, label, method, runs, export_plots, boundary_conditions, no_scf, name, or comparison_metrics unless they are explicitly present in a tool schema. "
         "When the user refers to ED, TF, or KPM-style methods, store that choice in spec.ldos_method. "
         "Use 'kpm' or 'kmeanssample' only as values of ldos_method, never as a free-standing method field. "
-        "Use create_spec and update_spec to set spec fields, and pass those values inside the spec object when calling validate_spec, generate_setup, run_ldos, run_dos, or run_task. "
+        "Use create_spec and update_spec to set spec fields, and pass those values inside the spec object when calling validate_spec, generate_setup, run_task, or any visualization/comparison tool. "
         "If the user asks for comparisons, with/without self-consistency, or multiple field values, expand that into multiple runs and a comparison step. "
+        "The run itself no longer needs a final DOS-vs-LDOS task selection. Treat the simulation spec as complete once the physical setup and solver settings are complete. "
+        "Choose result visualization tools after the run when the user asks what to inspect or compare. "
         "Use the provided conversation history and prior request context to resolve referential follow-ups like 'restart the plan', 'same setup', 'run it again', or 'change B to 2 T'. "
+        "If completed runs are provided by the backend, you may use them for post-run visualization or comparison plans instead of proposing a new simulation. "
         "If the latest user message is shorthand, reconstruct the intended task from that prior context instead of treating it as a brand-new standalone request. "
-        "Always include validate_spec before any run_ldos, run_dos, or run_task step. "
+        "Always include validate_spec before any run_task step. "
         "Available tools are: "
         f"{tool_list}. "
         "Use any structured request hints provided by the backend as strong evidence for user-specified values such as magnetic_field_T, backgate_voltage, and solve_self_consistent. "
@@ -271,6 +284,7 @@ def _generate_plan(
     last_plan_summary: str | None = None,
     last_tool_trace: list[dict[str, Any]] | None = None,
     request_hints: dict[str, Any] | None = None,
+    completed_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -294,6 +308,7 @@ def _generate_plan(
                             f"Conversation history:\n{_history_text(conversation_history or [])}\n\n"
                             f"Prior original request:\n{original_request or '-'}\n\n"
                             f"Structured request hints:\n{json.dumps(request_hints or {}, indent=2, sort_keys=True)}\n\n"
+                            f"Completed runs available for post-run visualization or comparison:\n{json.dumps(completed_runs or [], indent=2, sort_keys=True)}\n\n"
                             f"Previous plan summary:\n{last_plan_summary or '-'}\n\n"
                             f"Previous tool trace:\n{json.dumps(last_tool_trace or [], indent=2, sort_keys=True)}\n\n"
                             f"Latest user request:\n{message}"
@@ -443,7 +458,7 @@ def _build_spec_review(
     *,
     request_hints: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    run_tools = {"run_task", "run_ldos", "run_dos", "validate_spec", "generate_setup"}
+    run_tools = {"run_task", "validate_spec", "generate_setup"}
     spec_state: dict[str, Any] | None = None
     review_runs: list[dict[str, Any]] = []
     aggregate_missing_fields: list[str] = []
@@ -494,11 +509,7 @@ def _build_spec_review(
         elif tool_name in run_tools:
             requested_spec = _coerce_dict(arguments.get("spec")) or _coerce_dict(spec_state)
             requested_spec = profiles.merge_spec(normalized_request_hints, requested_spec)
-            if tool_name == "run_ldos":
-                requested_spec = profiles.merge_spec(requested_spec, {"task": "ldos"})
-            elif tool_name == "run_dos":
-                requested_spec = profiles.merge_spec(requested_spec, {"task": "dos"})
-            elif tool_name == "run_task" and requested_spec.get("task") is None and isinstance(spec_state, dict):
+            if tool_name == "run_task" and requested_spec.get("task") is None and isinstance(spec_state, dict):
                 requested_spec = dict(spec_state)
 
             required_defaults = _planner_required_defaults(config, requested_spec.get("profile", config.profile))
@@ -592,6 +603,7 @@ def run_planner_turn(
     pending_spec_review = current_state.get("pending_spec_review")
     original_request = str(current_state.get("original_request") or message)
     stored_human_readable_plan = current_state.get("human_readable_plan")
+    completed_runs = _normalize_completed_runs(current_state.get("completed_runs"))
     request_hints = _collect_request_hints(
         conversation_history=conversation_history,
         original_request=original_request,
@@ -701,6 +713,7 @@ def run_planner_turn(
                 last_plan_summary=str(current_state.get("plan_summary") or ""),
                 last_tool_trace=_coerce_trace(current_state.get("tool_trace")),
                 request_hints=request_hints,
+                completed_runs=completed_runs,
             )
             model_request = _coerce_dict(plan.pop("_debug_request_body"))
             rendered_message = _render_plan_message(plan)
@@ -817,6 +830,7 @@ def run_planner_turn(
                 last_plan_summary=str(current_state.get("plan_summary") or ""),
                 last_tool_trace=_coerce_trace(current_state.get("tool_trace")),
                 request_hints=request_hints,
+                completed_runs=completed_runs,
             )
             model_request = _coerce_dict(plan.pop("_debug_request_body"))
             rendered_message = _render_plan_message(plan)
@@ -876,6 +890,7 @@ def run_planner_turn(
         last_plan_summary=str(current_state.get("plan_summary") or ""),
         last_tool_trace=_coerce_trace(current_state.get("tool_trace")),
         request_hints=request_hints,
+        completed_runs=completed_runs,
     )
     model_request = _coerce_dict(plan.pop("_debug_request_body"))
     rendered_message = _render_plan_message(plan)

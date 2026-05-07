@@ -7,7 +7,9 @@ from typing import Any
 import numpy as np
 
 from agent.schemas import AgentRuntimeConfig
+from api.runtime import list_history_run_dirs
 from simulation import artifacts, profiles, runner, setup
+from simulation import viewer_data
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TOOL_CONTRACT_PATH = PROJECT_ROOT / "equantum_mcp_like.yaml"
@@ -124,30 +126,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "run_ldos",
-        "description": "Convenience wrapper that forces task=ldos and executes the run.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "spec": {"type": "object"},
-                "require_manual_check": {"type": "boolean", "default": False},
-            },
-            "required": ["spec"],
-        },
-    },
-    {
-        "name": "run_dos",
-        "description": "Convenience wrapper that forces task=dos and executes the run.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "spec": {"type": "object"},
-                "require_manual_check": {"type": "boolean", "default": False},
-            },
-            "required": ["spec"],
-        },
-    },
-    {
         "name": "read_run_summary",
         "description": "Load the saved query spec and run summary for a completed run.",
         "input_schema": {
@@ -168,6 +146,61 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "run_b": {"type": ["object", "null"]},
                 "artifact_dir_a": {"type": ["string", "null"]},
                 "artifact_dir_b": {"type": ["string", "null"]},
+            },
+        },
+    },
+    {
+        "name": "show_ldos_volume_3d",
+        "description": "Prepare a 3D LDOS visualization payload with energy on x, site index on y, and density on z.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "artifact_dir": {"type": ["string", "null"]},
+                "run": {"type": ["object", "null"]},
+                "snapshot": {"type": ["string", "null"]},
+                "max_sites": {"type": ["integer", "null"]},
+            },
+        },
+    },
+    {
+        "name": "show_ldos_linecut_with_ui",
+        "description": "Prepare an LDOS linecut along a chosen segment with Ui overlay.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "artifact_dir": {"type": ["string", "null"]},
+                "run": {"type": ["object", "null"]},
+                "snapshot": {"type": ["string", "null"]},
+                "p0": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+                "p1": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+                "cut_width": {"type": ["number", "null"]},
+            },
+        },
+    },
+    {
+        "name": "compare_ui_linecuts",
+        "description": "Prepare a multi-run Ui linecut comparison plot payload for matching cut coordinates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "artifact_dirs": {"type": ["array", "null"], "items": {"type": "string"}},
+                "runs": {"type": ["array", "null"], "items": {"type": "object"}},
+                "snapshot": {"type": ["string", "null"]},
+                "p0": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+                "p1": {"type": ["array", "null"], "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+                "cut_width": {"type": ["number", "null"]},
+            },
+        },
+    },
+    {
+        "name": "show_ldos_ui_heatmap",
+        "description": "Prepare the LDOS@Ui heatmap payload used by the main simulation canvas.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "artifact_dir": {"type": ["string", "null"]},
+                "run": {"type": ["object", "null"]},
+                "snapshot": {"type": ["string", "null"]},
             },
         },
     },
@@ -206,10 +239,12 @@ def execute_tool_call(name: str, arguments: dict[str, Any], config: AgentRuntime
         "validate_spec": _handle_validate_spec,
         "generate_setup": _handle_generate_setup,
         "run_task": _handle_run_task,
-        "run_ldos": _handle_run_ldos,
-        "run_dos": _handle_run_dos,
         "read_run_summary": _handle_read_run_summary,
         "compare_ldos_runs": _handle_compare_ldos_runs,
+        "show_ldos_volume_3d": _handle_show_ldos_volume_3d,
+        "show_ldos_linecut_with_ui": _handle_show_ldos_linecut_with_ui,
+        "compare_ui_linecuts": _handle_compare_ui_linecuts,
+        "show_ldos_ui_heatmap": _handle_show_ldos_ui_heatmap,
     }
     try:
         handler = handlers[name]
@@ -308,7 +343,7 @@ def _handle_update_spec(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwar
     return {"spec": updated}
 
 
-def _handle_set_boundary_conditions(arguments: dict[str, Any], _: AgentRuntimeConfig) -> dict[str, Any]:
+def _handle_set_boundary_conditions(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
     spec = _normalize_spec_payload(arguments.get("spec"))
     updates = dict(arguments.get("updates") or {})
     mapped_updates: dict[str, Any] = {}
@@ -498,6 +533,11 @@ def _artifact_dir_from_run_like(run_like: dict[str, Any] | None, explicit_artifa
     return Path(str(candidate)).resolve()
 
 
+def _latest_history_artifact_dirs(limit: int = 2) -> list[Path]:
+    runs = list_history_run_dirs()
+    return [path.resolve() for path in runs[:limit]]
+
+
 def _artifact_dirs_from_prior_trace(prior_tool_trace: Any) -> list[Path]:
     if not isinstance(prior_tool_trace, list):
         return []
@@ -523,6 +563,82 @@ def _artifact_dirs_from_prior_trace(prior_tool_trace: Any) -> list[Path]:
     return artifact_dirs
 
 
+def _resolve_visualization_artifact_dir(arguments: dict[str, Any], prior_tool_trace: Any) -> Path:
+    if arguments.get("run") is not None or arguments.get("artifact_dir") is not None:
+        return _artifact_dir_from_run_like(arguments.get("run"), arguments.get("artifact_dir"))
+    prior_dirs = _artifact_dirs_from_prior_trace(prior_tool_trace)
+    if prior_dirs:
+        return prior_dirs[-1]
+    fallback = _latest_history_artifact_dirs(limit=1)
+    if fallback:
+        return fallback[0]
+    raise ValueError("No artifact directory was supplied and no recent completed run could be inferred.")
+
+
+def _resolve_compare_artifact_dirs(arguments: dict[str, Any], prior_tool_trace: Any) -> tuple[Path, Path]:
+    if (
+        arguments.get("run_a") is not None
+        or arguments.get("run_b") is not None
+        or arguments.get("artifact_dir_a") is not None
+        or arguments.get("artifact_dir_b") is not None
+    ):
+        return (
+            _artifact_dir_from_run_like(arguments.get("run_a"), arguments.get("artifact_dir_a")),
+            _artifact_dir_from_run_like(arguments.get("run_b"), arguments.get("artifact_dir_b")),
+        )
+    prior_dirs = _artifact_dirs_from_prior_trace(prior_tool_trace)
+    if len(prior_dirs) >= 2:
+        return prior_dirs[-2], prior_dirs[-1]
+    fallback = _latest_history_artifact_dirs(limit=2)
+    if len(fallback) >= 2:
+        return fallback[1], fallback[0]
+    raise ValueError("Could not infer two completed runs to compare.")
+
+
+def _resolve_snapshot_name(artifact_dir: Path, snapshot_name: Any = None) -> str:
+    if isinstance(snapshot_name, str) and snapshot_name.strip():
+        return snapshot_name.strip()
+    snapshots = viewer_data.list_snapshots(artifact_dir)
+    if snapshots:
+        return snapshots[-1]
+    return "run_static.npz"
+
+
+def _default_cut_args(arguments: dict[str, Any]) -> tuple[list[float], list[float], float]:
+    p0 = arguments.get("p0") or [-0.6, 0.0]
+    p1 = arguments.get("p1") or [0.6, 0.0]
+    cut_width = float(arguments.get("cut_width") or 0.05)
+    return [float(p0[0]), float(p0[1])], [float(p1[0]), float(p1[1])], cut_width
+
+
+def _load_ldos_volume_payload(artifact_dir: Path, snapshot_name: str, max_sites: int | None = None) -> dict[str, Any]:
+    static_data = viewer_data.load_run_static(artifact_dir)
+    snapshot_data = viewer_data.load_snapshot(artifact_dir, snapshot_name)
+    if "ildos" not in snapshot_data:
+        raise ValueError(f"Snapshot {snapshot_name} does not contain ildos data.")
+    qsites = np.asarray(static_data["Qsites"], dtype=int)
+    ildos = snapshot_data["ildos"]
+    site_limit = min(len(qsites), max_sites or len(qsites))
+    energy_reference = np.asarray(ildos[0][0], dtype=float)
+    ldos_rows: list[list[float | None]] = []
+    site_ids: list[int] = []
+    for local_index in range(site_limit):
+        energy = np.asarray(ildos[local_index][0], dtype=float)
+        rho = np.asarray(ildos[local_index][1], dtype=float)
+        if len(energy) != len(energy_reference) or not np.allclose(energy, energy_reference):
+            rho = np.interp(energy_reference, energy, rho, left=np.nan, right=np.nan)
+        site_ids.append(int(qsites[local_index]))
+        ldos_rows.append([float(value) if np.isfinite(value) else None for value in rho.tolist()])
+    return {
+        "type": "ldos_volume_3d",
+        "artifact_dir": str(artifact_dir),
+        "snapshot": snapshot_name,
+        "energy": [float(value) for value in energy_reference.tolist()],
+        "site_ids": site_ids,
+        "ldos_matrix": ldos_rows,
+    }
+
+
 def _load_ldos_artifact(artifact_dir: Path) -> dict[str, Any]:
     ldos_path = artifact_dir / "ldos_data.npz"
     if ldos_path.exists():
@@ -541,20 +657,7 @@ def _load_ldos_artifact(artifact_dir: Path) -> dict[str, Any]:
 
 def _handle_compare_ldos_runs(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
     prior_tool_trace = kwargs.get("prior_tool_trace")
-    if (
-        arguments.get("run_a") is None
-        and arguments.get("run_b") is None
-        and arguments.get("artifact_dir_a") is None
-        and arguments.get("artifact_dir_b") is None
-    ):
-        prior_artifact_dirs = _artifact_dirs_from_prior_trace(prior_tool_trace)
-        if len(prior_artifact_dirs) >= 2:
-            arguments = dict(arguments)
-            arguments["artifact_dir_a"] = str(prior_artifact_dirs[-2])
-            arguments["artifact_dir_b"] = str(prior_artifact_dirs[-1])
-
-    artifact_dir_a = _artifact_dir_from_run_like(arguments.get("run_a"), arguments.get("artifact_dir_a"))
-    artifact_dir_b = _artifact_dir_from_run_like(arguments.get("run_b"), arguments.get("artifact_dir_b"))
+    artifact_dir_a, artifact_dir_b = _resolve_compare_artifact_dirs(arguments, prior_tool_trace)
 
     summary_a = artifacts.load_run_summary(str(artifact_dir_a))
     summary_b = artifacts.load_run_summary(str(artifact_dir_b))
@@ -621,4 +724,108 @@ def _handle_compare_ldos_runs(arguments: dict[str, Any], _: AgentRuntimeConfig, 
     return {
         "comparison": comparison,
         "summary": summary,
+        "visualization": {
+            "type": "ldos_comparison",
+            "artifact_dir_a": str(artifact_dir_a),
+            "artifact_dir_b": str(artifact_dir_b),
+            "energy": common_energy.tolist(),
+            "ldos_a": aligned_a.tolist(),
+            "ldos_b": aligned_b.tolist(),
+            "delta": delta.tolist(),
+            "label_a": f"{spec_a.get('ldos_method') or 'run_a'}",
+            "label_b": f"{spec_b.get('ldos_method') or 'run_b'}",
+        },
+    }
+
+
+def _handle_show_ldos_volume_3d(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
+    artifact_dir = _resolve_visualization_artifact_dir(arguments, kwargs.get("prior_tool_trace"))
+    snapshot_name = _resolve_snapshot_name(artifact_dir, arguments.get("snapshot"))
+    max_sites = arguments.get("max_sites")
+    payload = _load_ldos_volume_payload(artifact_dir, snapshot_name, int(max_sites) if max_sites is not None else None)
+    return {"visualization": payload}
+
+
+def _handle_show_ldos_linecut_with_ui(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
+    artifact_dir = _resolve_visualization_artifact_dir(arguments, kwargs.get("prior_tool_trace"))
+    snapshot_name = _resolve_snapshot_name(artifact_dir, arguments.get("snapshot"))
+    p0, p1, cut_width = _default_cut_args(arguments)
+    payload = viewer_data.ldos_cut_data(
+        artifact_dir,
+        snapshot_name,
+        p0,
+        p1,
+        cut_width,
+        [snapshot_name],
+    )
+    return {
+        "visualization": {
+            "type": "ldos_linecut_with_ui",
+            "artifact_dir": str(artifact_dir),
+            **payload,
+        }
+    }
+
+
+def _handle_compare_ui_linecuts(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
+    raw_dirs = arguments.get("artifact_dirs")
+    artifact_dirs: list[Path] = []
+    if isinstance(raw_dirs, list):
+        artifact_dirs.extend(Path(str(item)).resolve() for item in raw_dirs if item)
+    raw_runs = arguments.get("runs")
+    if isinstance(raw_runs, list):
+        for item in raw_runs:
+            if isinstance(item, dict) and item.get("artifact_dir"):
+                artifact_dirs.append(Path(str(item["artifact_dir"])).resolve())
+    if not artifact_dirs:
+        artifact_dirs = _artifact_dirs_from_prior_trace(kwargs.get("prior_tool_trace"))[-2:]
+    if not artifact_dirs:
+        artifact_dirs = _latest_history_artifact_dirs(limit=2)
+    if len(artifact_dirs) < 2:
+        raise ValueError("Need at least two completed runs to compare Ui linecuts.")
+    p0, p1, cut_width = _default_cut_args(arguments)
+    snapshot_name = arguments.get("snapshot")
+    traces: list[dict[str, Any]] = []
+    for artifact_dir in artifact_dirs[:4]:
+        resolved_snapshot = _resolve_snapshot_name(artifact_dir, snapshot_name)
+        cut = viewer_data.ldos_cut_data(
+            artifact_dir,
+            resolved_snapshot,
+            p0,
+            p1,
+            cut_width,
+            [resolved_snapshot],
+        )
+        spec = artifacts.load_query_spec(str(artifact_dir))
+        overlay = ((cut.get("overlays") or [None])[0]) or {}
+        traces.append(
+            {
+                "artifact_dir": str(artifact_dir),
+                "snapshot": resolved_snapshot,
+                "label": f"B={spec.get('magnetic_field_T')} T, Vbg={spec.get('backgate_voltage')}",
+                "distance_along": overlay.get("distance_along", cut.get("distance_along", [])),
+                "values": overlay.get("Ui", []),
+            }
+        )
+    return {
+        "visualization": {
+            "type": "ui_linecut_compare",
+            "p0": p0,
+            "p1": p1,
+            "cut_width": cut_width,
+            "traces": traces,
+        }
+    }
+
+
+def _handle_show_ldos_ui_heatmap(arguments: dict[str, Any], _: AgentRuntimeConfig, **kwargs) -> dict[str, Any]:
+    artifact_dir = _resolve_visualization_artifact_dir(arguments, kwargs.get("prior_tool_trace"))
+    snapshot_name = _resolve_snapshot_name(artifact_dir, arguments.get("snapshot"))
+    payload = viewer_data.quantum_heatmap_data(artifact_dir, snapshot_name, "LDOS@Ui")
+    return {
+        "visualization": {
+            "type": "ldos_ui_heatmap",
+            "artifact_dir": str(artifact_dir),
+            **payload,
+        }
     }
