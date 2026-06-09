@@ -309,6 +309,7 @@ def normalize_turn_parse(parsed, default_profile="dotgate_center"):
         "_parser": None,
         "_fallback_used": False,
         "_parser_error": None,
+        "_debug_request_body": None,
     }
     if parsed is None:
         normalized["updates"]["profile"] = default_profile
@@ -320,7 +321,7 @@ def normalize_turn_parse(parsed, default_profile="dotgate_center"):
     updates = dict(empty_updates(default_profile=default_profile))
     if isinstance(parsed, dict):
         updates.update(parsed.get("updates", {}) or {})
-        for meta_key in ["_parser", "_fallback_used", "_parser_error"]:
+        for meta_key in ["_parser", "_fallback_used", "_parser_error", "_debug_request_body"]:
             if meta_key in parsed:
                 normalized[meta_key] = parsed[meta_key]
     if updates.get("profile") is None:
@@ -446,6 +447,7 @@ def llm_parse_user_turn(query, default_profile, api_key, model, base_url, contex
     parsed["raw_query"] = query
     parsed["_parser"] = f"openai:{model}"
     parsed["_fallback_used"] = False
+    parsed["_debug_request_body"] = request_body
     return normalize_turn_parse(parsed, default_profile=default_profile)
 
 
@@ -841,8 +843,20 @@ def build_session_state(
         "setup_generation_confirmed": bool(setup_generation_confirmed),
         "setup_generation_signature": setup_generation_signature,
         "last_parser_debug": last_parser_debug,
+        "last_model_request": (
+            last_parser_debug.get("model_request")
+            if isinstance(last_parser_debug, dict)
+            else None
+        ),
         "history": list(history or []),
     }
+
+
+def parser_result_payload(session_state):
+    model_request = session_state.get("last_model_request")
+    if isinstance(model_request, dict):
+        return {"model_request": model_request}
+    return None
 
 
 def process_session_spec(spec, session_state, args, execute=True):
@@ -861,6 +875,7 @@ def process_session_spec(spec, session_state, args, execute=True):
             spec=session_state["spec"],
             missing_fields=list(session_state.get("missing_fields", [])),
             session_state=session_state,
+            result=parser_result_payload(session_state),
         )
 
     pending_default_fields = fields_needing_default_confirmation(
@@ -878,6 +893,7 @@ def process_session_spec(spec, session_state, args, execute=True):
             spec=session_state["spec"],
             missing_fields=list(session_state.get("missing_fields", [])),
             session_state=session_state,
+            result=parser_result_payload(session_state),
         )
 
     if session_state.get("defaults_confirmed", False):
@@ -906,6 +922,7 @@ def process_session_spec(spec, session_state, args, execute=True):
                 spec=session_state["spec"],
                 missing_fields=list(session_state.get("missing_fields", [])),
                 session_state=session_state,
+                result=parser_result_payload(session_state),
             )
     else:
         session_state["setup_generation_confirmed"] = False
@@ -920,6 +937,7 @@ def process_session_spec(spec, session_state, args, execute=True):
             spec=session_state["spec"],
             missing_fields=list(session_state.get("missing_fields", [])),
             session_state=session_state,
+            result=parser_result_payload(session_state),
         )
 
     if execute:
@@ -963,6 +981,7 @@ def process_session_spec(spec, session_state, args, execute=True):
         spec=session_state["spec"],
         missing_fields=list(session_state.get("missing_fields", [])),
         session_state=session_state,
+        result=parser_result_payload(session_state),
     )
 
 
@@ -993,6 +1012,7 @@ def start_turn(user_text: str, args=None, execute: bool = False) -> AgentRespons
             "updates": turn_parse.get("updates"),
             "fallback_used": turn_parse.get("_fallback_used", False),
             "parser_error": turn_parse.get("_parser_error"),
+            "model_request": turn_parse.get("_debug_request_body"),
         },
     )
     if turn_parse.get("intent") == "confirm_defaults" and not pending_default_fields:
@@ -1090,6 +1110,7 @@ def continue_turn(session_state: dict[str, Any], user_text: str, args=None, exec
                     "updates": turn_parse.get("updates"),
                     "fallback_used": turn_parse.get("_fallback_used", False),
                     "parser_error": turn_parse.get("_parser_error"),
+                    "model_request": turn_parse.get("_debug_request_body"),
                 },
             )
             return AgentResponse(
@@ -1155,6 +1176,7 @@ def continue_turn(session_state: dict[str, Any], user_text: str, args=None, exec
             "updates": turn_parse.get("updates"),
             "fallback_used": turn_parse.get("_fallback_used", False),
             "parser_error": turn_parse.get("_parser_error"),
+            "model_request": turn_parse.get("_debug_request_body"),
         },
     )
     if updated_state["pending_default_fields"] and defaults_confirmed:

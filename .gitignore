@@ -44,6 +44,7 @@ Datas/
 agent_runs/
 *.npz
 *.png
+screen_record/
 
 # =========================
 # Misc

@@ -17,6 +17,20 @@ to:
 3. a self-consistent field (FSC) run
 4. saved DOS/LDOS artifacts, snapshots, and summaries
 
+## Web App Preview
+
+### Task planner chat workflow
+
+![Task planner chat demo](screen_record/task_planner_chat.gif)
+
+### Geometry viewer
+
+![Geometry viewer demo](screen_record/geometry_viewer_readme.gif)
+
+### Quantum viewer snapshot
+
+![Quantum viewer snapshot](screen_record/quantum_viewer.png)
+
 ## Repository Layout
 
 ```text
