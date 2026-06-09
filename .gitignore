@@ -43,7 +43,8 @@ EQuantumAI.code-workspace
 Datas/
 agent_runs/
 *.npz
-*.png
+#*.png
+
 
 # =========================
 # Misc
